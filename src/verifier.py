@@ -16,7 +16,7 @@ class ClauseVerifier:
     OUT_OF_SCOPE_KEYWORDS = [
         "tax", "commercial", "passport", "weather", "sports", "python", "france",
         "recipe", "dmv", "pet", "dog", "cat", "marathon", "relativity", "photosynthesis",
-        "node.js", "rest api", "kubernetes", "docker", "ssl", "world series", "baseball", "football", "basketball"
+        "node.js", "rest api", "kubernetes", "docker", "ssl", "world series", "baseball", "football", "basketball", "llm"
     ]
 
     AMBIGUOUS_PATTERNS = [
@@ -69,8 +69,8 @@ class ClauseVerifier:
                 "routing": "Per §12.0.1, refer the student eligibility determination to a Senior Policy Supervisor."
             }
 
-        # 3. Check Candidate Retrieval Threshold
-        if not candidates or candidates[0]["score"] < 0.15:
+        # 3. Check Candidate Retrieval Threshold (0.20 score threshold)
+        if not candidates or candidates[0]["score"] < 0.20:
             return {
                 "status": "out_of_scope",
                 "claim_date": target_date,
@@ -95,7 +95,7 @@ class ClauseVerifier:
                 }
 
         # 5. Clean Grounded Candidates
-        top_candidates = [c for c in candidates if c["score"] >= 0.15][:3]
+        top_candidates = [c for c in candidates if c["score"] >= 0.20][:3]
         
         return {
             "status": "supported",

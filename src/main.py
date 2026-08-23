@@ -16,12 +16,13 @@ def main():
     parser = argparse.ArgumentParser(description="Calder County Policy Manual Grounded Answer CLI (Day 2 Temporal Versioning)")
     parser.add_argument("query", nargs="*", help="Plain language policy question")
     parser.add_argument("--date", type=str, default=None, help="Claim date (YYYY-MM-DD or Month YYYY e.g. 2026-02-01, 2026-04-01)")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Print verbose indexing logs")
     
     args, unknown = parser.parse_known_args()
 
     raw_query_words = args.query + unknown
     
-    # Check if last word is a date string like YYYY-MM-DD
+    # Check if last word is a date string like YYYY-MM-DD or e.g. 2025-03-20
     override_date = args.date
     if raw_query_words and not override_date:
         last_word = raw_query_words[-1].strip()
@@ -31,22 +32,27 @@ def main():
 
     query_str = " ".join(raw_query_words).strip()
 
-    print("=" * 75)
-    print("  Calder County Policy Manual — Grounded Answer System (CLI)")
-    print("  Supported Corpus: Policy Manual (2025) & Amendment No. 2026-01 (1 March 2026)")
-    print("=" * 75)
+    if args.verbose:
+        print("=" * 75)
+        print("  Calder County Policy Manual — Grounded Answer System (CLI)")
+        print("  Supported Corpus: Policy Manual (2025) & Amendment No. 2026-01 (1 March 2026)")
+        print("=" * 75)
+        print("\n[1/3] Indexing corpus files (policy-manual.md & Amendment No. 2026-01.md)...")
 
     # 1. Load All Corpus Chunks
-    print("\n[1/3] Indexing corpus files (policy-manual.md & Amendment No. 2026-01.md)...")
     chunks = load_and_parse_all_corpus()
-    print(f"      Successfully indexed {len(chunks)} clause chunks across corpus.")
+    
+    if args.verbose:
+        print(f"      Successfully indexed {len(chunks)} clause chunks across corpus.")
+        print("[2/3] Initializing retriever, verifier, and generator pipeline...")
 
     # 2. Initialize Pipeline Components
-    print("[2/3] Initializing retriever, verifier, and generator pipeline...")
     retriever = ClauseRetriever(chunks)
     verifier = ClauseVerifier()
     generator = GroundedAnswerGenerator()
-    print("[3/3] System ready.")
+    
+    if args.verbose:
+        print("[3/3] System ready.")
 
     # Handle Command-Line Arguments or Interactive CLI
     if query_str:
