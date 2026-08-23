@@ -1,6 +1,5 @@
 import sys
 import os
-import argparse
 
 # Ensure workspace root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -13,22 +12,8 @@ from src.generator import GroundedAnswerGenerator
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Calder County Policy Manual Grounded Answer CLI")
-    parser.add_argument("query", nargs="*", help="Plain language policy question")
-    parser.add_argument("--mode", choices=["auto", "llm", "rule"], default="auto", 
-                        help="Execution mode: 'auto' (LLM with rule fallback), 'llm' (force LLM), 'rule' (force rule engine)")
-    
-    args, unknown = parser.parse_known_args()
-
-    raw_query_words = args.query + unknown
-    query_str = " ".join(raw_query_words).strip()
-
-    force_rule = (args.mode == "rule")
-    force_llm = (args.mode == "llm")
-
     print("=" * 75)
     print("  Calder County Policy Manual — Grounded Answer System (CLI)")
-    print(f"  Execution Mode: {args.mode.upper()}")
     print("=" * 75)
 
     # 1. Load Manual
@@ -48,8 +33,9 @@ def main():
     print("[4/4] System ready.")
 
     # Handle Command-Line Arguments or Interactive CLI
-    if query_str:
-        process_query(query_str, retriever, verifier, generator, force_rule=force_rule, force_llm=force_llm)
+    if len(sys.argv) > 1:
+        query_str = " ".join(sys.argv[1:]).strip()
+        process_query(query_str, retriever, verifier, generator)
     else:
         print("\nEnter a policy question (or type 'exit' / 'quit' to stop):")
         while True:
@@ -60,13 +46,13 @@ def main():
                 if query.lower() in ("exit", "quit", "q"):
                     print("Exiting Grounded Answer CLI.")
                     break
-                process_query(query, retriever, verifier, generator, force_rule=force_rule, force_llm=force_llm)
+                process_query(query, retriever, verifier, generator)
             except (KeyboardInterrupt, EOFError):
                 print("\nExiting.")
                 break
 
 
-def process_query(query: str, retriever: ClauseRetriever, verifier: ClauseVerifier, generator: GroundedAnswerGenerator, force_rule: bool = False, force_llm: bool = False):
+def process_query(query: str, retriever: ClauseRetriever, verifier: ClauseVerifier, generator: GroundedAnswerGenerator):
     print(f"\n" + "=" * 75)
     print(f"QUERY: {query}")
     print("=" * 75)
@@ -77,14 +63,11 @@ def process_query(query: str, retriever: ClauseRetriever, verifier: ClauseVerifi
     # Stage 2: Verification
     verification = verifier.verify(query, candidates)
 
-    # Stage 3: Generation & Refusal Formatting
-    result = generator.generate(query, verification, force_rule=force_rule, force_llm=force_llm)
+    # Stage 3: LLM Generation & Refusal Formatting
+    result = generator.generate(query, verification)
 
     # Output Display
-    print(f"\nDECISION: {result['decision']}")
-    print(f"GENERATION ENGINE: {result.get('mode_used', 'N/A')}")
-    print("-" * 75)
-    print(result['answer_text'])
+    print("\n" + result['answer_text'])
     
     citation_scores = result.get('citation_scores', {})
     if result['citations']:

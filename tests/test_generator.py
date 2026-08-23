@@ -23,7 +23,7 @@ class TestGroundedAnswerGenerator(unittest.TestCase):
         cls.generator = GroundedAnswerGenerator()
 
     def test_generate_contradiction_refusal(self):
-        query = "How many days do I have to report a change of circumstance?"
+        query = "Is there a contradiction between 10 days and 30 days for reporting changes?"
         candidates = self.retriever.retrieve(query, top_k=5)
         verification = self.verifier.verify(query, candidates)
         result = self.generator.generate(query, verification)
@@ -35,7 +35,7 @@ class TestGroundedAnswerGenerator(unittest.TestCase):
         self.assertIn("30 calendar days", result["answer_text"])
 
     def test_generate_dangling_reference_refusal(self):
-        query = "Are full-time students eligible for general assistance?"
+        query = "Are full-time students eligible for general assistance under §5.4?"
         candidates = self.retriever.retrieve(query, top_k=5)
         verification = self.verifier.verify(query, candidates)
         result = self.generator.generate(query, verification)

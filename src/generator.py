@@ -5,28 +5,50 @@ from src.llm_client import LLMClient
 class GroundedAnswerGenerator:
     """
     Stage 3 Decision & Answer Generation Engine:
-    Constructs cited grounded answers or surfaces structured refusals with routing.
-    Supports both LLM-driven synthesis and deterministic rule-based formatting,
-    including cosine similarity scores for transparency.
+    Synthesizes brief, clear answers grounded in retrieved policy clauses,
+    or surfaces structured refusals with routing.
     """
+
+    SYSTEM_INSTRUCTION = (
+        "You are answering questions about a policy manual using only the retrieved clauses provided as context.\n"
+        "Do not simply restate or paraphrase the retrieved clauses. You must:\n\n"
+        "1. Directly answer the specific question asked, in the first sentence — as a clear conclusion (e.g. 'Yes, this is a violation' / 'No overpayment applies' / 'The reporting window has expired').\n"
+        "2. Then explain your reasoning by applying the relevant clause(s) to the specific facts in the question (e.g. specific day counts, amounts, or dates), not just quoting the rule in the abstract.\n"
+        "3. If the question has multiple parts (e.g. 'is X true, and will Y happen?'), answer EACH part explicitly and separately — do not answer only the part covered by the strongest-matching retrieved clause.\n"
+        "4. If the retrieved clauses are insufficient to answer part of the question, say so explicitly rather than silently omitting that part of the answer.\n"
+        "5. Never output a citation or clause without applying it — a clause with no stated relevance to the facts should not appear in the answer."
+    )
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.llm_client = llm_client or LLMClient()
 
-    def generate(self, query: str, verification: Dict[str, Any], force_rule: bool = False, force_llm: bool = False) -> Dict[str, Any]:
+    def generate(self, query: str, verification: Dict[str, Any]) -> Dict[str, Any]:
         """
         Generates the final system output response structure:
         {
             "query": str,
-            "decision": "ANSWER" | "REFUSE_CONTRADICTION" | "REFUSE_DANGLING" | "REFUSE_OUT_OF_SCOPE",
+            "decision": "ANSWER" | "REFUSE_CONTRADICTION" | "REFUSE_DANGLING" | "REFUSE_OUT_OF_SCOPE" | "REFUSE_AMBIGUOUS",
             "answer_text": str,
             "citations": List[str],
             "citation_scores": Dict[str, float],
-            "routing": str,
-            "mode_used": str
+            "routing": str
         }
         """
         status = verification.get("status")
+
+        # 0. Handle Ambiguity
+        if status == "ambiguous":
+            return {
+                "query": query,
+                "decision": "REFUSE_AMBIGUOUS",
+                "answer_text": (
+                    "[REFUSAL: Ambiguous Query / Missing Fact Details]\n\n"
+                    "The query lacks sufficient details to make a policy determination. Required facts missing: household size, income, resources, and residency details."
+                ),
+                "citations": [],
+                "citation_scores": {},
+                "routing": verification.get("routing", "Refer to Senior Policy Supervisor under §12.0.1 for application intake assessment.")
+            }
 
         # 1. Handle Contradictions
         if status == "contradiction":
@@ -47,8 +69,7 @@ class GroundedAnswerGenerator:
                 "answer_text": answer_text,
                 "citations": citations,
                 "citation_scores": citation_scores,
-                "routing": verification.get("routing", "Escalate to Senior Policy Supervisor under §12.0.1."),
-                "mode_used": "RULE_ENGINE"
+                "routing": verification.get("routing", "Escalate to Senior Policy Supervisor under §12.0.1.")
             }
 
         # 2. Handle Dangling References
@@ -68,8 +89,7 @@ class GroundedAnswerGenerator:
                 "answer_text": answer_text,
                 "citations": citations,
                 "citation_scores": citation_scores,
-                "routing": verification.get("routing", "Refer application to a supervisor under §12.0.1."),
-                "mode_used": "RULE_ENGINE"
+                "routing": verification.get("routing", "Refer application to a supervisor under §12.0.1.")
             }
 
         # 3. Handle Out-of-Scope Queries
@@ -83,43 +103,29 @@ class GroundedAnswerGenerator:
                 ),
                 "citations": [],
                 "citation_scores": {},
-                "routing": verification.get("routing", "Consult a Senior Policy Supervisor under §12.0.1 or contact the State Department of Human Services."),
-                "mode_used": "RULE_ENGINE"
+                "routing": verification.get("routing", "Consult a Senior Policy Supervisor under §12.0.1 or contact the State Department of Human Services.")
             }
 
-        # 4. Construct Grounded Answer for Supported Queries
+        # 4. Construct Grounded LLM Answer for Supported Queries
         supporting_chunks = verification.get("supporting_chunks", [])
         citations = [c["clause_id"] for c in supporting_chunks]
         citation_scores = {c["clause_id"]: c.get("score", 0.0) for c in supporting_chunks}
         
-        mode_used = "RULE_ENGINE"
-        llm_response = None
+        formatted_chunks = "\n---\n".join([f"Clause §{c['clause_id']} ({c['heading']}):\n{c['text']}" for c in supporting_chunks])
+        
+        llm_prompt = (
+            f"Question: {query}\n\n"
+            f"Retrieved clauses:\n{formatted_chunks}\n\n"
+            "Answer:"
+        )
+        
+        llm_response = self.llm_client.call_gemini(
+            prompt=llm_prompt,
+            system_instruction=self.SYSTEM_INSTRUCTION,
+            force_llm_synth=True
+        )
 
-        if not force_rule:
-            llm_prompt = (
-                f"Question: {query}\n\n"
-                "Retrieved Policy Clauses:\n"
-                + "\n---\n".join([f"Clause §{c['clause_id']} ({c['heading']}):\n{c['text']}" for c in supporting_chunks])
-                + "\n\nTask: Write a concise, direct answer to the question. Every factual claim MUST be followed by its exact clause citation in brackets like [§x.y.z]. Do not make claims not found in the clauses."
-            )
-            
-            llm_response = self.llm_client.call_gemini(
-                prompt=llm_prompt,
-                system_instruction="You are a strict policy assistant. Every claim in your answer must carry an explicit clause citation in the format [§x.y.z].",
-                force_llm_synth=force_llm
-            )
-
-        if llm_response:
-            answer_text = llm_response.strip()
-            mode_used = "LLM (Gemini Natural Language Synthesis)"
-        else:
-            lines = []
-            for c in supporting_chunks:
-                clean_clause_text = c['text'].strip()
-                lines.append(f"{clean_clause_text} [§{c['clause_id']}]")
-            
-            answer_text = "According to the Calder County Policy Manual:\n\n" + "\n\n".join(lines)
-            mode_used = "RULE_ENGINE (Verbatim Clause Formatting)"
+        answer_text = llm_response.strip() if llm_response else self._fallback_answer(supporting_chunks)
 
         return {
             "query": query,
@@ -127,6 +133,11 @@ class GroundedAnswerGenerator:
             "answer_text": answer_text,
             "citations": citations,
             "citation_scores": citation_scores,
-            "routing": "",
-            "mode_used": mode_used
+            "routing": ""
         }
+
+    def _fallback_answer(self, chunks: List[Dict[str, Any]]) -> str:
+        lines = []
+        for c in chunks:
+            lines.append(f"{c['text'].strip()} [§{c['clause_id']}]")
+        return "\n\n".join(lines)
