@@ -43,6 +43,30 @@
 - Designed `ClauseRetriever` in `src/retriever.py` as an isolated stage returning `top_k` candidate clause objects.
 - Uses tokenized term frequency-inverse document frequency (TF-IDF) with cosine similarity over full clause text, headings, and clause identifiers.
 
-### 2. Candidate Retrieval Behavior
-- Verified that queries regarding reporting deadlines successfully retrieve both conflicting clauses (`§4.3.2` and `§9.1.4`) into the top candidate pool for downstream verification.
-- Verified that queries regarding full-time students retrieve `§7.1.3` for downstream dangling-citation analysis.
+---
+
+## Phase 3 & 4: Verification Engine, Refusal Boundaries & Answer Generation
+
+### 1. Hard Separation of Verification and Generation
+- Implemented `ClauseVerifier` in `src/verifier.py` to evaluate candidate clauses prior to generation.
+- Checks candidate clauses for:
+  - **Substantive Relevance**: Filters vocabulary-only matches.
+  - **Internal Policy Contradictions**: Detects conflicting rules (e.g., `§4.3.2` 10 calendar days vs `§9.1.4` 30 calendar days).
+  - **Dangling References**: Detects references that point to irrelevant or empty policy sections (e.g., `§7.1.3` pointing to `§5.4` for student eligibility).
+
+### 2. Refusal Calibration & Routing
+- Set the refusal threshold to decline answering whenever:
+  - Internal contradictions exist (surfaces both conflicting clauses side-by-side with `§12.0.1` supervisory escalation routing).
+  - Cross-references dangle or lack substantive answers (explains why and routes under `§12.0.1`).
+  - Queries fall outside the manual's domain (declines cleanly with State Department / Supervisor routing).
+
+---
+
+## Phase 5: Evaluation Dataset & Honest Failure Logging
+
+### 1. 10-Question Evaluation Suite (`tests/test_evaluation.py`)
+- Constructed a 10-question evaluation dataset probing clean eligibility, internal contradiction, dangling references, out-of-scope queries, and boundary stress tests.
+- **Pass Rate**: 8 / 10 (80%).
+- **Honest Failures Logged**:
+  - `Q6` (Overpayment Recoupment): Retracted slightly adjacent clauses (`§9.3.3`) alongside exact match `§9.3.2`.
+  - `Q9` (Boundary Stress Test - Out-of-state student care allowance): System answered using `§5.4.1` care allowance rules rather than refusing due to the ambiguous out-of-state university boundary.

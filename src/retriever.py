@@ -8,8 +8,8 @@ from src.chunker import parse_chunks
 
 class ClauseRetriever:
     """
-    In-memory vector retriever using term-frequency inverse-document-frequency (TF-IDF) 
-    and sub-word/n-gram keyword matching to retrieve top-k policy clauses.
+    In-memory vector retriever using term-frequency inverse-document-frequency (TF-IDF),
+    word stemming, and heading weighting to retrieve top-k policy clauses.
     """
 
     def __init__(self, chunks: List[Dict[str, Any]]):
@@ -19,9 +19,21 @@ class ClauseRetriever:
         self.vocab = set()
         self._build_index()
 
+    def _stem(self, word: str) -> str:
+        """Simple English stemmer rule for plural/tense normalization."""
+        w = word.lower()
+        if len(w) > 4 and w.endswith("s") and not w.endswith("ss"):
+            w = w[:-1]
+        if len(w) > 4 and w.endswith("ing"):
+            w = w[:-3]
+        if len(w) > 4 and w.endswith("ed"):
+            w = w[:-2]
+        return w
+
     def _tokenize(self, text: str) -> List[str]:
-        """Tokenizes text into lowercase alphanumeric terms and section IDs."""
-        tokens = re.findall(r'\b\w+\b|\§?\d+\.\d+(?:\.\d+)?', text.lower())
+        """Tokenizes text into lowercase stemmed terms and section IDs."""
+        raw_tokens = re.findall(r'\b\w+\b|\§?\d+\.\d+(?:\.\d+)?', text.lower())
+        tokens = [self._stem(t) for t in raw_tokens]
         return tokens
 
     def _build_index(self):
@@ -31,8 +43,13 @@ class ClauseRetriever:
         doc_tfs = []
 
         for chunk in self.chunks:
-            # Combine clause text, heading, part, and clause_id for richer indexing
-            full_content = f"{chunk['clause_id']} {chunk['part']} {chunk['heading']} {chunk['text']}"
+            # Heading terms receive extra weight by duplicating them in content
+            full_content = (
+                f"{chunk['clause_id']} {chunk['clause_id']} "
+                f"{chunk['part']} {chunk['part']} "
+                f"{chunk['heading']} {chunk['heading']} {chunk['heading']} "
+                f"{chunk['text']}"
+            )
             tokens = self._tokenize(full_content)
             tf = Counter(tokens)
             doc_tfs.append((chunk, tf, len(tokens)))
@@ -40,7 +57,7 @@ class ClauseRetriever:
                 doc_freqs[term] += 1
                 self.vocab.add(term)
 
-        # Compute IDF: log((N + 1) / (df + 1)) + 1
+        # Compute IDF
         for term, df in doc_freqs.items():
             self.idf[term] = math.log((N + 1.0) / (df + 1.0)) + 1.0
 
@@ -54,21 +71,11 @@ class ClauseRetriever:
                 norm_sq += tfidf ** 2
             norm = math.sqrt(norm_sq) if norm_sq > 0 else 1.0
             
-            # Normalize vector
             norm_vec = {t: v / norm for t, v in vec.items()}
             self.doc_vectors.append((chunk, norm_vec))
 
     def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """
-        Retrieves top-k clause chunks most relevant to the user's query.
-
-        Args:
-            query: Plain-language user question.
-            top_k: Number of candidate clauses to return (default 5).
-
-        Returns:
-            List of clause dictionaries enriched with a 'score' field.
-        """
+        """Retrieves top-k clause chunks most relevant to the query."""
         query_tokens = self._tokenize(query)
         if not query_tokens:
             return []
@@ -88,10 +95,9 @@ class ClauseRetriever:
 
         scored_chunks = []
         for chunk, doc_vec in self.doc_vectors:
-            # Cosine similarity dot product
             score = sum(val * doc_vec.get(term, 0.0) for term, val in norm_q_vec.items())
             
-            # Boost score if explicit clause ID (e.g. 4.3.2) is referenced in query
+            # Boost score if explicit clause ID is referenced
             if chunk['clause_id'] in query or f"§{chunk['clause_id']}" in query:
                 score += 0.5
 
@@ -100,20 +106,5 @@ class ClauseRetriever:
                 chunk_copy['score'] = round(score, 4)
                 scored_chunks.append(chunk_copy)
 
-        # Sort by score descending
         scored_chunks.sort(key=lambda x: x['score'], reverse=True)
         return scored_chunks[:top_k]
-
-
-if __name__ == "__main__":
-    manual_text = load_policy_manual()
-    chunks = parse_chunks(manual_text)
-    retriever = ClauseRetriever(chunks)
-    
-    test_query = "How many days do I have to report a change in income?"
-    results = retriever.retrieve(test_query, top_k=3)
-    
-    print(f"Query: '{test_query}'")
-    print(f"Top {len(results)} Results:")
-    for r in results:
-        print(f"  - [§{r['clause_id']}] {r['heading']} (Score: {r['score']})")
