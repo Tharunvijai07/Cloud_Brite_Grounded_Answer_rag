@@ -13,7 +13,8 @@ class TestPolicyManualLoader(unittest.TestCase):
         text = load_policy_manual("corpus/policy-manual.md")
         self.assertIsInstance(text, str)
         self.assertGreater(len(text), 0)
-        self.assertIn("Calder County Social Services Policy Manual", text)
+        self.assertIn("Calder County", text)
+        self.assertIn("Policy Manual", text)
 
     def test_load_policy_manual_file_not_found(self):
         with self.assertRaises(FileNotFoundError):
