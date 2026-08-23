@@ -34,4 +34,15 @@
 ### 2. Validation & Hand-Skimming Results
 - Extracted 148 total chunks across all 12 Parts of the policy manual.
 - Confirmed zero clause splits, zero merged clauses, and 100% unique clause IDs.
-- Validated key edge-case clauses (`§4.3.2`, `§5.4.1`, `§7.1.3`, `§9.1.4`, `§6.6.1`).
+
+---
+
+## Phase 2: In-Memory Vector & TF-IDF Retrieval Engine
+
+### 1. Separable Retrieval Stage
+- Designed `ClauseRetriever` in `src/retriever.py` as an isolated stage returning `top_k` candidate clause objects.
+- Uses tokenized term frequency-inverse document frequency (TF-IDF) with cosine similarity over full clause text, headings, and clause identifiers.
+
+### 2. Candidate Retrieval Behavior
+- Verified that queries regarding reporting deadlines successfully retrieve both conflicting clauses (`§4.3.2` and `§9.1.4`) into the top candidate pool for downstream verification.
+- Verified that queries regarding full-time students retrieve `§7.1.3` for downstream dangling-citation analysis.
