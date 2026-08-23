@@ -4,7 +4,7 @@
 
 ### 1. Repository Layout
 - Established standard folder hierarchy:
-  - `corpus/`: Stores raw source documents (`policy-manual.md`).
+  - `corpus/`: Stores raw source documents (`policy-manual.md`, `Amendment No. 2026-01.md`).
   - `src/`: Python source code for data loading, retrieval, verification, and decision pipelines.
   - `tests/`: Automated unit and integration tests.
   - `DECISIONS.md`: Architectural decisions log.
@@ -70,3 +70,26 @@
 - **Honest Failures Logged**:
   - `Q6` (Overpayment Recoupment): Retracted slightly adjacent clauses (`§9.3.3`) alongside exact match `§9.3.2`.
   - `Q9` (Boundary Stress Test - Out-of-state student care allowance): System answered using `§5.4.1` care allowance rules rather than refusing due to the ambiguous out-of-state university boundary.
+
+---
+
+## Day 2: Temporal Versioning & Amendment No. 2026-01 Integration
+
+### 1. Architectural Changes Made
+- **Effective Date Boundary (1 March 2026)**: Added `effective_date` metadata tracking across all corpus chunks (`2025-12-31` for base manual vs `2026-03-01` for Amendment No. 2026-01).
+- **Date Extraction & Retrieval Filtering (`src/retriever.py`)**:
+  - Implemented `extract_claim_date()` to extract dates from natural language queries (e.g., *"February 2026"* vs *"April 2026"*).
+  - Candidates are dynamically filtered: claims prior to 1 March 2026 omit amendment provisions; claims on or after 1 March 2026 evaluate both base manual rules and active amendment provisions.
+- **Strict Policy Interpretation — No Silent Date Guessing**:
+  - **Policy Rule**: When a query omits the claim or change date, the system **does not silently guess** or default to today's date.
+  - **Dual-Temporal Branching**: Surfacing both **Option A (Before 1 March 2026)** and **Option B (On or after 1 March 2026)** side-by-side and requesting the caseworker clarify the date of the claim/change.
+- **Contradiction Resolution Handling (`src/verifier.py`)**:
+  - Amendment No. 2026-01 §2 aligns both `§4.3.2` and `§9.1.4` to **14 calendar days** for changes occurring on or after 1 March 2026, resolving the pre-amendment contradiction.
+  - For pre-March 2026 claim dates, the 10-day vs 30-day contradiction remains active and correctly triggers `REFUSE_CONTRADICTION`.
+
+### 2. What We Chose Not to Change
+- **Clean Stage Boundaries**: Maintained strict stage separation across retrieval (`src/retriever.py`), verification (`src/verifier.py`), and decision/generation (`src/generator.py`) without introducing leaky cross-stage dependencies.
+- **Corpus Integrity**: Did not overwrite `policy-manual.md`; read `Amendment No. 2026-01.md` as an additive temporal overlay per `§1.2.3`.
+
+### 3. Retrospective: What We Would Have Done Differently
+- **Early Date Schema Abstraction**: Had we anticipated temporal versioning, we would have baked an `effective_date` property directly into the base chunk schema from Phase 1, making the Day 2 transition completely seamless.

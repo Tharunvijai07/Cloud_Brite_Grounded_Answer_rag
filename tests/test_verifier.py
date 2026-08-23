@@ -26,7 +26,7 @@ class TestClauseVerifier(unittest.TestCase):
             {"clause_id": "4.3.2", "score": 0.40, "heading": "Recipient Obligations"},
             {"clause_id": "9.1.4", "score": 0.35, "heading": "Overpayment Recovery"}
         ]
-        res = self.verifier.verify("Is there a contradiction between 10 days and 30 days?", candidates)
+        res = self.verifier.verify("Is there a contradiction between 10 days and 30 days for a claim dated February 2026?", candidates, claim_date="2026-02-01")
         self.assertEqual(res["status"], "contradiction")
 
     def test_supported_query(self):

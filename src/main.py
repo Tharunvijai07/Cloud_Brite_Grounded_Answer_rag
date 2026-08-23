@@ -1,41 +1,56 @@
 import sys
 import os
+import re
+import argparse
 
 # Ensure workspace root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.loader import load_policy_manual
-from src.chunker import parse_chunks
-from src.retriever import ClauseRetriever
+from src.chunker import load_and_parse_all_corpus
+from src.retriever import ClauseRetriever, extract_claim_date
 from src.verifier import ClauseVerifier
 from src.generator import GroundedAnswerGenerator
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Calder County Policy Manual Grounded Answer CLI (Day 2 Temporal Versioning)")
+    parser.add_argument("query", nargs="*", help="Plain language policy question")
+    parser.add_argument("--date", type=str, default=None, help="Claim date (YYYY-MM-DD or Month YYYY e.g. 2026-02-01, 2026-04-01)")
+    
+    args, unknown = parser.parse_known_args()
+
+    raw_query_words = args.query + unknown
+    
+    # Check if last word is a date string like YYYY-MM-DD
+    override_date = args.date
+    if raw_query_words and not override_date:
+        last_word = raw_query_words[-1].strip()
+        if re.match(r'^\d{4}-\d{2}-\d{2}$', last_word):
+            override_date = last_word
+            raw_query_words = raw_query_words[:-1]
+
+    query_str = " ".join(raw_query_words).strip()
+
     print("=" * 75)
     print("  Calder County Policy Manual — Grounded Answer System (CLI)")
+    print("  Supported Corpus: Policy Manual (2025) & Amendment No. 2026-01 (1 March 2026)")
     print("=" * 75)
 
-    # 1. Load Manual
-    print("\n[1/4] Loading policy manual from corpus/policy-manual.md...")
-    manual_text = load_policy_manual("corpus/policy-manual.md")
+    # 1. Load All Corpus Chunks
+    print("\n[1/3] Indexing corpus files (policy-manual.md & Amendment No. 2026-01.md)...")
+    chunks = load_and_parse_all_corpus()
+    print(f"      Successfully indexed {len(chunks)} clause chunks across corpus.")
 
-    # 2. Parse Chunks
-    print("[2/4] Parsing clauses into structured chunks...")
-    chunks = parse_chunks(manual_text)
-    print(f"      Successfully indexed {len(chunks)} policy clauses.")
-
-    # 3. Initialize Pipeline Components
-    print("[3/4] Initializing retriever, verifier, and generator pipeline...")
+    # 2. Initialize Pipeline Components
+    print("[2/3] Initializing retriever, verifier, and generator pipeline...")
     retriever = ClauseRetriever(chunks)
     verifier = ClauseVerifier()
     generator = GroundedAnswerGenerator()
-    print("[4/4] System ready.")
+    print("[3/3] System ready.")
 
     # Handle Command-Line Arguments or Interactive CLI
-    if len(sys.argv) > 1:
-        query_str = " ".join(sys.argv[1:]).strip()
-        process_query(query_str, retriever, verifier, generator)
+    if query_str:
+        process_query(query_str, retriever, verifier, generator, override_date=override_date)
     else:
         print("\nEnter a policy question (or type 'exit' / 'quit' to stop):")
         while True:
@@ -46,22 +61,30 @@ def main():
                 if query.lower() in ("exit", "quit", "q"):
                     print("Exiting Grounded Answer CLI.")
                     break
-                process_query(query, retriever, verifier, generator)
+                
+                date_input = input("Claim Date (YYYY-MM-DD or Month YYYY e.g. 2026-02-01, press Enter if unknown) > ").strip()
+                user_date = date_input if date_input else None
+
+                process_query(query, retriever, verifier, generator, override_date=user_date)
             except (KeyboardInterrupt, EOFError):
                 print("\nExiting.")
                 break
 
 
-def process_query(query: str, retriever: ClauseRetriever, verifier: ClauseVerifier, generator: GroundedAnswerGenerator):
+def process_query(query: str, retriever: ClauseRetriever, verifier: ClauseVerifier, generator: GroundedAnswerGenerator, override_date: str = None):
+    target_date = override_date or extract_claim_date(query)
+    display_date = target_date if target_date else "UNSPECIFIED (Presenting Both Pre- and Post-1 March 2026 Policy Rules)"
+
     print(f"\n" + "=" * 75)
     print(f"QUERY: {query}")
+    print(f"APPLICABLE CLAIM DATE: {display_date}")
     print("=" * 75)
 
-    # Stage 1: Retrieval
-    candidates = retriever.retrieve(query, top_k=5)
+    # Stage 1: Retrieval (Filtered by claim date)
+    candidates = retriever.retrieve(query, top_k=5, claim_date=target_date)
     
     # Stage 2: Verification
-    verification = verifier.verify(query, candidates)
+    verification = verifier.verify(query, candidates, claim_date=target_date)
 
     # Stage 3: LLM Generation & Refusal Formatting
     result = generator.generate(query, verification)

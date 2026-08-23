@@ -33,9 +33,9 @@ class TestEvaluationBenchmark(unittest.TestCase):
         else:
             cls.benchmark_data = {"benchmark_cases": []}
 
-    def run_query(self, query: str):
-        candidates = self.retriever.retrieve(query, top_k=5)
-        verification = self.verifier.verify(query, candidates)
+    def run_query(self, query: str, claim_date: str = None):
+        candidates = self.retriever.retrieve(query, top_k=5, claim_date=claim_date)
+        verification = self.verifier.verify(query, candidates, claim_date=claim_date)
         return self.generator.generate(query, verification)
 
     # Category 1: Direct Fact Retrieval
@@ -45,7 +45,7 @@ class TestEvaluationBenchmark(unittest.TestCase):
         self.assertIn("2.4.1", res["citations"])
 
     def test_tc_0102_income_disregard(self):
-        res = self.run_query("How much monthly employment earnings are disregarded from countable income?")
+        res = self.run_query("How much monthly employment earnings are disregarded from countable income for a claim dated February 2026?", claim_date="2026-02-01")
         self.assertEqual(res["decision"], "ANSWER")
         self.assertIn("6.4.1", res["citations"])
 
@@ -55,9 +55,9 @@ class TestEvaluationBenchmark(unittest.TestCase):
         self.assertEqual(res["decision"], "ANSWER")
         self.assertIn("11.1.2", res["citations"])
 
-    # Category 5: Contradiction Detection
+    # Category 5: Contradiction Detection (Pre-March 2026)
     def test_tc_0501_reporting_contradiction(self):
-        res = self.run_query("Is there a contradiction between 10 days and 30 days for reporting changes?")
+        res = self.run_query("Is there a contradiction between 10 days and 30 days for reporting changes?", claim_date="2026-02-01")
         self.assertEqual(res["decision"], "REFUSE_CONTRADICTION")
         self.assertIn("4.3.2", res["citations"])
         self.assertIn("9.1.4", res["citations"])

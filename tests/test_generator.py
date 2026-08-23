@@ -23,9 +23,9 @@ class TestGroundedAnswerGenerator(unittest.TestCase):
         cls.generator = GroundedAnswerGenerator()
 
     def test_generate_contradiction_refusal(self):
-        query = "Is there a contradiction between 10 days and 30 days for reporting changes?"
-        candidates = self.retriever.retrieve(query, top_k=5)
-        verification = self.verifier.verify(query, candidates)
+        query = "Is there a contradiction between 10 days and 30 days for a claim dated February 2026?"
+        candidates = self.retriever.retrieve(query, top_k=5, claim_date="2026-02-01")
+        verification = self.verifier.verify(query, candidates, claim_date="2026-02-01")
         result = self.generator.generate(query, verification)
         
         self.assertEqual(result["decision"], "REFUSE_CONTRADICTION")
