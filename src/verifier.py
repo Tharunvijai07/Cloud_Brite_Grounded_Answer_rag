@@ -79,7 +79,7 @@ class ClauseVerifier:
             }
 
         # 4. Detect Contradiction for Pre-March 2026 Reporting Queries
-        if target_date and target_date < "2026-03-01":
+        if not target_date or target_date < "2026-03-01":
             if ("contradiction" in query_lower or ("10 days" in query_lower and "30 days" in query_lower)) or ("report" in query_lower and "change" in query_lower and "day" in query_lower and "february" in query_lower):
                 conflicting = [c for c in candidates if c["clause_id"] in ("4.3.2", "9.1.4")]
                 if not conflicting:

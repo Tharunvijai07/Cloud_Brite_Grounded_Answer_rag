@@ -1,2 +1,4 @@
-# Dependencies for Grounded Answer RAG System
-# (Will be populated in subsequent phases as embedding models or frameworks are selected)
+# Core dependencies for Grounded Answer RAG System
+google-generativeai>=0.8.0
+numpy>=1.24.0
+pytest>=8.0.0
