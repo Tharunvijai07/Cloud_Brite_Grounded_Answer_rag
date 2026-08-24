@@ -94,3 +94,29 @@
 
 ### 3. Retrospective: What We Would Have Done Differently
 - **Early Date Schema Abstraction**: Had we anticipated temporal versioning, we would have baked an `effective_date` property directly into the base chunk schema from Phase 1, making the Day 2 transition completely seamless.
+
+---
+
+## Submission Checklist & Tradeoffs Summary
+
+### 1. What We Chose
+- **Lightweight Zero-Dependency RAG**: Custom TF-IDF vector engine with word stemming and heading weighting in `src/retriever.py`, avoiding external vector database overhead.
+- **Strict 3-Stage Pipeline**: Hard separation between Retrieval (`src/retriever.py`), Verification (`src/verifier.py`), and Answer Generation (`src/generator.py`).
+- **Dual-Temporal Branching**: Surfacing pre- and post-March 2026 rules side-by-side when claim dates are omitted, adhering to legal non-guessing standards.
+
+### 2. What We Rejected
+- **External Heavy Vector Databases**: Avoided Pinecone/ChromaDB/FAISS to ensure zero-setup execution in clean Python environments.
+- **Silent Date Defaulting**: Rejected defaulting missing claim dates to "today's date" or current system time, as policy eligibility rules depend on exact claim dates.
+
+### 3. What Was Cut Due to Time
+- **Dynamic Graph Parser for Cross-Clause Links**: Automated directed graph parsing for dangling references (`§7.1.3` $\rightarrow$ `§5.4`).
+- **YAML-Driven Amendment Schema**: Externalizing amendment dates into `config/amendments.yaml` instead of inline date attributes.
+
+### 4. What the Solution Does Not Do
+- Does **not** answer general knowledge, mathematical, or out-of-scope non-policy queries (returns `REFUSE_OUT_OF_SCOPE`).
+- Does **not** speculate on incomplete applicant eligibility when household facts (income, resources, family size) are omitted (returns `REFUSE_AMBIGUOUS`).
+
+### 5. What We Would Improve First
+- **Hybrid Dense/Sparse RRF Retrieval**: Combine sparse TF-IDF with dense vector embeddings using Reciprocal Rank Fusion.
+- **Config-Driven Temporal Schema**: Decouple effective dates into standalone YAML configuration files.
+

@@ -18,6 +18,24 @@ The system supports **temporal versioning** around the key policy boundary date:
 
 ---
 
+## Setup & Dependencies
+
+### Environment Requirements
+- **Python Version**: Python 3.8+ (no external database or C++ compilation required).
+- **Dependencies**: Python standard library built-ins. Optional dependencies listed in `requirements.txt`.
+
+### Installation
+```bash
+# Clone the repository
+git clone <repo_url>
+cd Cloud_Brite_Grounded_Answer_rag
+
+# Install optional dependencies (for Gemini API integration & testing frameworks)
+pip install -r requirements.txt
+```
+
+---
+
 ## Quick Start & Evaluation Guide
 
 ### 1. Run WITH a Specific Claim Date
