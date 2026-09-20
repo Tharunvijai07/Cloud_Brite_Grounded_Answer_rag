@@ -1,4 +1,4 @@
-# Core dependencies for Grounded Answer RAG System
-google-generativeai>=0.8.0
+sentence-transformers>=2.2.0
+rank-bm25>=0.2.2
 numpy>=1.24.0
-pytest>=8.0.0
+torch>=2.0.0

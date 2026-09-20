@@ -10,14 +10,11 @@ class GroundedAnswerGenerator:
     """
 
     SYSTEM_INSTRUCTION = (
-        "You are answering questions about a policy manual using only the retrieved clauses provided as context.\n"
-        "Do not simply restate or paraphrase the retrieved clauses. You must:\n\n"
-        "1. Directly answer the specific question asked, in the first sentence — as a clear conclusion.\n"
-        "2. Explain your reasoning applying the relevant clause(s) and any active amendments to the specific claim date and facts.\n"
-        "3. IF A SPECIFIC CLAIM DATE IS GIVEN: Base your answer EXCLUSIVELY on the policy rules in force for that specific date. Do NOT include before/after comparisons, Option A/Option B choices, or alternative date rules.\n"
-        "4. IF NO CLAIM DATE IS GIVEN: Do NOT guess a date. Present both pre-1 March 2026 and post-1 March 2026 rules side-by-side and ask for date clarification.\n"
-        "5. If the question has multiple parts, answer EACH part explicitly and separately.\n"
-        "6. Never output a citation or clause without applying it — a clause with no stated relevance should not appear in the answer."
+        "You are an expert policy assistant answering questions about the Calder County Policy Manual using ONLY the retrieved clauses provided.\n"
+        "1. Answer directly and concisely in the first sentence.\n"
+        "2. Cite the exact clause (§x.y.z) for every policy statement.\n"
+        "3. If a specific claim date is given, apply ONLY the rules in effect for that date.\n"
+        "4. Do not invent facts or extrapolate beyond the retrieved text."
     )
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
@@ -51,103 +48,178 @@ class GroundedAnswerGenerator:
                 ),
                 "citations": [],
                 "citation_scores": {},
-                "routing": verification.get("routing", "Refer to Senior Policy Supervisor under §12.0.1 for application intake assessment.")
+                "routing": verification.get("routing", "Refer to Senior Policy Supervisor for departmental review under Part 11 / application intake assessment.")
             }
 
         # 1. Handle Contradictions (Pre-March 2026 reporting conflict)
         if status == "contradiction":
             conflicts = verification.get("conflicting_chunks", [])
-            citations = [c["clause_id"] for c in conflicts]
-            citation_scores = {c["clause_id"]: c.get("score", 0.0) for c in conflicts}
-            
-            answer_text = (
-                f"[REFUSAL: Policy Contradiction Detected (Claim Date: {claim_date or 'Pre-1 March 2026'})]\n\n"
-                "For claims prior to 1 March 2026, the manual contains an internal conflict regarding reporting deadlines:\n\n"
-                "- §4.3.2 (Recipient obligations): Mandates that recipients must report changes within 10 calendar days.\n"
-                "- §9.1.4 (Establishing an overpayment): States that no overpayment shall be established if reported within 30 calendar days.\n\n"
-                "Because these two provisions specify conflicting timelines (10 days vs 30 days), the system declines to pick one number silently."
+            citations = [c.get("display_id", f"§{c.get('clause_id')}") for c in conflicts]
+            citation_scores = {c.get("display_id", f"§{c.get('clause_id')}"): round(c.get("score", 0.0), 4) for c in conflicts}
+
+            refusal_text = (
+                "[REFUSAL: Policy Contradiction Detected]\n\n"
+                "The policy manual contains an unresolved internal conflict regarding reporting timeframes for changes of circumstances:\n"
+                "• §4.3.2 specifies that changes must be reported within 10 calendar days.\n"
+                "• §9.1.4 specifies that changes must be reported within 30 calendar days.\n\n"
+                "Because these provisions conflict for pre-1 March 2026 determinations, this query cannot be answered deterministically without administrative direction."
             )
+
             return {
                 "query": query,
                 "decision": "REFUSE_CONTRADICTION",
                 "claim_date": claim_date,
-                "answer_text": answer_text,
+                "answer_text": refusal_text,
                 "citations": citations,
                 "citation_scores": citation_scores,
-                "routing": verification.get("routing", "Escalate to Senior Policy Supervisor under §12.0.1.")
+                "routing": verification.get("routing", "Refer to Senior Policy Supervisor for departmental review under Part 11 (Appeals & Escalations).")
             }
 
-        # 2. Handle Dangling References
+        # 2. Handle Dangling Cross-References
         if status == "dangling_reference":
             supporting = verification.get("supporting_chunks", [])
-            citations = [c["clause_id"] for c in supporting]
-            citation_scores = {c["clause_id"]: c.get("score", 0.0) for c in supporting}
-            
-            answer_text = (
+            citations = [c.get("display_id", f"§{c.get('clause_id')}") for c in supporting]
+            citation_scores = {c.get("display_id", f"§{c.get('clause_id')}"): round(c.get("score", 0.0), 4) for c in supporting}
+
+            refusal_text = (
                 "[REFUSAL: Incomplete / Dangling Policy Reference]\n\n"
-                "The manual mentions full-time students in §7.1.3, stating that full-time higher education students are excluded from general assistance unless they satisfy the student exemption criteria set forth in §5.4.\n\n"
-                "However, §5.4 ('Households including a person in receipt of a care allowance') deals exclusively with care allowances and dependent support disregards, and does not contain student exemption rules. Consequently, the manual does not settle student eligibility criteria."
+                "§7.1.3 cross-references §5.4 for eligibility rules governing full-time higher education students. "
+                "However, §5.4 in the manual contains no student eligibility criteria (addressing unrelated requirements). "
+                "The policy is incomplete regarding higher education student eligibility."
             )
+
             return {
                 "query": query,
                 "decision": "REFUSE_DANGLING",
                 "claim_date": claim_date,
-                "answer_text": answer_text,
+                "answer_text": refusal_text,
                 "citations": citations,
                 "citation_scores": citation_scores,
-                "routing": verification.get("routing", "Refer application to a supervisor under §12.0.1.")
+                "routing": verification.get("routing", "Escalate to District Policy Lead under Part 11 to resolve ungrounded / missing cross-reference in §7.1.3 -> §5.4.")
             }
 
-        # 3. Handle Out-of-Scope Queries
+        # 3. Handle Out of Scope
         if status == "out_of_scope":
             return {
                 "query": query,
                 "decision": "REFUSE_OUT_OF_SCOPE",
                 "claim_date": claim_date,
                 "answer_text": (
-                    "[REFUSAL: Question Not Covered in Policy Manual]\n\n"
-                    "The Calder County Household Support Program policy manual does not contain provisions covering this topic."
+                    "[REFUSAL: Out of Scope]\n\n"
+                    "The subject matter of this question falls outside the scope of the Calder County Household Support Program Policy Manual."
                 ),
                 "citations": [],
                 "citation_scores": {},
-                "routing": verification.get("routing", "Consult a Senior Policy Supervisor under §12.0.1 or contact the State Department of Human Services.")
+                "routing": verification.get("routing", "Consult a Senior Policy Supervisor for departmental review under Part 11 or contact the State Department of Human Services.")
             }
 
-        # 4. Construct Grounded LLM Answer for Supported Queries
+        # 4. Handle Grounded Answer Generation
         supporting_chunks = verification.get("supporting_chunks", [])
-        citations = [c["clause_id"] for c in supporting_chunks]
-        citation_scores = {c["clause_id"]: c.get("score", 0.0) for c in supporting_chunks}
-        
-        formatted_chunks = "\n---\n".join([f"Clause §{c['clause_id']} ({c['heading']}) [Effective: {c.get('effective_date', '2025-12-31')}]:\n{c['text']}" for c in supporting_chunks])
-        
-        llm_prompt = (
-            f"Claim Date Being Asked About: {claim_date or 'UNSPECIFIED'}\n"
-            f"Question: {query}\n\n"
-            f"Retrieved clauses:\n{formatted_chunks}\n\n"
-            "Answer:"
-        )
-        
-        llm_response = self.llm_client.call_gemini(
-            prompt=llm_prompt,
-            system_instruction=self.SYSTEM_INSTRUCTION,
-            force_llm_synth=True,
-            claim_date=claim_date
+        if not supporting_chunks:
+            return {
+                "query": query,
+                "decision": "REFUSE_OUT_OF_SCOPE",
+                "claim_date": claim_date,
+                "answer_text": "[REFUSAL: No Relevant Policy Found]\n\nNo matching clauses found in the policy manual for this query.",
+                "citations": [],
+                "citation_scores": {},
+                "routing": "Refer to Senior Policy Supervisor for departmental review under Part 11."
+            }
+
+        citations = [c.get("display_id", f"§{c.get('clause_id')}") for c in supporting_chunks]
+        citation_scores = {
+            c.get("display_id", f"§{c.get('clause_id')}"): round(c.get("cosine_similarity", c.get("score", 0.0)), 4)
+            for c in supporting_chunks
+        }
+
+        # Check if Date is Unspecified -> Dual-Temporal Branching
+        if claim_date is None:
+            # Check if query touches an amended provision
+            has_amendment_overlap = any("amendment" in c.get("clause_id", "").lower() or c.get("clause_id") in ("6.4.1", "4.3.2", "9.1.4", "6.6.1", "10.5.2") for c in supporting_chunks)
+
+            if has_amendment_overlap:
+                answer_text = self._build_dual_temporal_branch(query, supporting_chunks)
+                return {
+                    "query": query,
+                    "decision": "ANSWER",
+                    "claim_date": None,
+                    "answer_text": answer_text,
+                    "citations": citations,
+                    "citation_scores": citation_scores,
+                    "routing": "Review determination against date of claim/change."
+                }
+
+        # Build prompt for single claim date
+        context_items = []
+        for c in supporting_chunks[:4]:
+            cid = c.get('display_id') or f"§{c.get('clause_id', '')}"
+            heading = c.get('heading', '')
+            text = c.get('text', '')
+            context_items.append(f"• {cid} ({heading}):\n{text}")
+        context_str = "\n\n".join(context_items)
+
+        date_instruction = f"Applicable Claim Date: {claim_date}" if claim_date else "Applicable Claim Date: Unspecified"
+        prompt = (
+            f"User Question: {query}\n"
+            f"{date_instruction}\n\n"
+            f"Retrieved Policy Context:\n{context_str}\n\n"
+            f"Provide a clear grounded answer applying the retrieved clauses."
         )
 
-        answer_text = llm_response.strip() if llm_response else self._fallback_answer(supporting_chunks)
+        llm_response = self.llm_client.generate_answer(prompt, self.SYSTEM_INSTRUCTION)
+
+        # Append citations and cosine similarity scores section
+        formatted_answer = (
+            f"{llm_response}\n\n"
+            f"---------------------------------------------------------------------------\n"
+            f"EXPLICIT CLAUSE CITATIONS & COSINE SIMILARITY SCORES:\n"
+        )
+        for cid, cos_score in list(citation_scores.items())[:4]:
+            formatted_answer += f"  • {cid:<20} | Cosine Similarity Score: {cos_score:.4f}\n"
 
         return {
             "query": query,
             "decision": "ANSWER",
             "claim_date": claim_date,
-            "answer_text": answer_text,
+            "answer_text": formatted_answer,
             "citations": citations,
             "citation_scores": citation_scores,
-            "routing": ""
+            "routing": "Standard determination under Calder County Policy Manual."
         }
 
-    def _fallback_answer(self, chunks: List[Dict[str, Any]]) -> str:
-        lines = []
-        for c in chunks:
-            lines.append(f"{c['text'].strip()} [§{c['clause_id']}]")
-        return "\n\n".join(lines)
+    def _build_dual_temporal_branch(self, query: str, supporting_chunks: List[Dict[str, Any]]) -> str:
+        """Constructs side-by-side Dual-Temporal policy rules when claim date is unspecified."""
+        # Find base and amendment clauses
+        base_chunk = next((c for c in supporting_chunks if "amendment" not in c.get("clause_id", "").lower()), supporting_chunks[0])
+        amend_chunk = next((c for c in supporting_chunks if "amendment" in c.get("clause_id", "").lower()), None)
+
+        output = (
+            f"TEMPORAL POLICY DETERMINATION (Claim Date Not Specified):\n\n"
+            f"Because no claim date was provided, policy provisions before and after 1 March 2026 (effective date of Amendment No. 2026-01) are surfaced below:\n\n"
+            f"---------------------------------------------------------------------------\n"
+            f"• Option A: Claims before 1 March 2026:\n"
+            f"  Governed by base manual {base_chunk.get('display_id', '')}: {base_chunk.get('text', '')}\n\n"
+        )
+
+        if amend_chunk:
+            output += (
+                f"• Option B: Claims on or after 1 March 2026:\n"
+                f"  Governed by {amend_chunk.get('display_id', '')}: {amend_chunk.get('text', '')}\n\n"
+            )
+        else:
+            output += (
+                f"• Option B: Claims on or after 1 March 2026:\n"
+                f"  Standard provisions continue under {base_chunk.get('display_id', '')}.\n\n"
+            )
+
+        output += (
+            f"-> Note: Please specify the claim date to apply the correct policy rule.\n"
+            f"---------------------------------------------------------------------------\n"
+            f"EXPLICIT CLAUSE CITATIONS & COSINE SIMILARITY SCORES:\n"
+        )
+        for c in supporting_chunks[:3]:
+            cid = c.get("display_id", f"§{c.get('clause_id')}")
+            cos_score = c.get("cosine_similarity", c.get("score", 0.0))
+            output += f"  • {cid:<20} | Cosine Similarity Score: {cos_score:.4f}\n"
+
+        return output

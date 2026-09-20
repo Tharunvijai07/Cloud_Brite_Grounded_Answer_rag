@@ -1,113 +1,143 @@
 import re
 import os
-import sys
 from typing import List, Dict, Any
-
-# Ensure workspace root is in python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
 from src.loader import load_policy_manual
 
 
-def parse_chunks(raw_text: str, default_effective_date: str = "2025-12-31") -> List[Dict[str, Any]]:
-    """
-    Parses the raw Markdown text of a policy manual or amendment into structured chunks.
-    
-    Each chunk corresponds to a clause keyed by its §x.y.z ID and includes:
-    - clause_id: Clause identifier string (e.g., '4.3.2' or 'A2026-01-1.1')
-    - text: Full raw text of the clause including sub-bullets and tables
-    - part: The section part heading (e.g., 'Part 4' or 'Amendment 2026-01')
-    - heading: The section sub-heading (e.g., 'Recipient obligations')
-    - effective_date: ISO date string (e.g., '2025-12-31' or '2026-03-01')
+def extract_cross_references(text: str) -> List[str]:
+    """Finds all §x.y.z and section references in the text."""
+    refs = re.findall(r'§(\d+(?:\.\d+)+[A-Za-z]?)', text)
+    return sorted(list(set(refs)))
 
-    Args:
-        raw_text: The complete Markdown text of the manual or amendment.
-        default_effective_date: Default effective date for clauses in this text.
 
-    Returns:
-        A list of chunk dictionaries.
+def parse_policy_manual_chunks(text: str, source_doc: str = "policy-manual.md") -> List[Dict[str, Any]]:
     """
-    lines = raw_text.splitlines(keepends=True)
+    Parses the consolidated base policy manual into clause-level chunks
+    using Markdown headers and bold clause markers (**x.y.z**).
+    """
     chunks = []
-    
-    current_part = ""
-    current_heading = ""
+    lines = text.split("\n")
+
+    current_part = "Preamble"
+    current_section = "General"
     current_clause_id = None
-    current_text_lines = []
+    current_clause_heading = "General"
+    current_clause_lines = []
 
-    # Regex patterns
-    part_pattern = re.compile(r'^#\s+(Part\s+\d+|Amendment\s+.*)', re.IGNORECASE)
-    heading_pattern = re.compile(r'^##\s+(\d+\.\d+|\d+)\s+(.*)')
-    clause_pattern = re.compile(r'^\*\*(\d+\.\d+\.\d+|\d+\.\d+)(?:[^*]*)\*\*\s*')
+    part_pattern = re.compile(r"^#\s+(Part\s+\d+.*?)$", re.IGNORECASE)
+    section_pattern = re.compile(r"^##\s+(\d+\.\d+\s+.*?)$")
+    clause_start_pattern = re.compile(r"^\*\*(\d+\.\d+\.\d+[A-Za-z]?)\*\*(?:\s+(.*?))?(?:\s*—\s*(.*))?$")
 
-    def finalize_chunk():
-        nonlocal current_clause_id, current_text_lines
-        if current_clause_id:
-            full_text = "".join(current_text_lines).strip()
-            chunks.append({
-                "clause_id": current_clause_id,
-                "text": full_text,
-                "part": current_part,
-                "heading": current_heading,
-                "effective_date": default_effective_date
-            })
-            current_clause_id = None
-            current_text_lines = []
+    def flush_clause():
+        nonlocal current_clause_id, current_clause_heading, current_clause_lines
+        if current_clause_id and current_clause_lines:
+            raw_body = "\n".join(current_clause_lines).strip()
+            if raw_body:
+                chunks.append({
+                    "clause_id": current_clause_id,
+                    "display_id": f"§{current_clause_id}",
+                    "heading": current_clause_heading,
+                    "part": current_part,
+                    "section": current_section,
+                    "text": raw_body,
+                    "effective_date": "2025-12-31",
+                    "source_doc": source_doc,
+                    "cross_references": extract_cross_references(raw_body)
+                })
+        current_clause_id = None
+        current_clause_lines = []
 
     for line in lines:
         part_match = part_pattern.match(line)
         if part_match:
-            finalize_chunk()
+            flush_clause()
             current_part = part_match.group(1).strip()
             continue
 
-        heading_match = heading_pattern.match(line)
-        if heading_match:
-            finalize_chunk()
-            current_heading = heading_match.group(2).strip()
+        section_match = section_pattern.match(line)
+        if section_match:
+            flush_clause()
+            current_section = section_match.group(1).strip()
             continue
 
-        clause_match = clause_pattern.match(line)
+        clause_match = clause_start_pattern.match(line.strip())
         if clause_match:
-            finalize_chunk()
+            flush_clause()
             current_clause_id = clause_match.group(1)
-            current_text_lines.append(line)
+            inline_title = clause_match.group(2) or clause_match.group(3) or current_section
+            current_clause_heading = inline_title.strip() if inline_title else current_section
+            current_clause_lines = [line.strip()]
+        else:
+            if current_clause_id:
+                current_clause_lines.append(line)
+
+    flush_clause()
+    return chunks
+
+
+def parse_amendment_chunks(text: str, source_doc: str = "Amendment No. 2026-01.md") -> List[Dict[str, Any]]:
+    """
+    Parses Amendment No. 2026-01 into structured chunks with effective date 2026-03-01.
+    """
+    chunks = []
+    lines = text.split("\n")
+
+    current_section = "Amendment Overview"
+    current_para_id = None
+    current_para_lines = []
+
+    sec_pattern = re.compile(r"^##\s+(\d+\.\s+.*?)$")
+    para_pattern = re.compile(r"^\*\*(\d+\.\d+)\*\*\s+(.*)$")
+
+    def flush_para():
+        nonlocal current_para_id, current_para_lines, current_section
+        if current_para_id and current_para_lines:
+            raw_body = "\n".join(current_para_lines).strip()
+            if raw_body:
+                chunks.append({
+                    "clause_id": f"amendment_2026_01_{current_para_id}",
+                    "display_id": f"Amendment No. 2026-01 §{current_para_id}",
+                    "heading": f"Amendment No. 2026-01: {current_section}",
+                    "part": "Amendment No. 2026-01 (Effective 1 March 2026)",
+                    "section": current_section,
+                    "text": raw_body,
+                    "effective_date": "2026-03-01",
+                    "source_doc": source_doc,
+                    "cross_references": extract_cross_references(raw_body)
+                })
+        current_para_id = None
+        current_para_lines = []
+
+    for line in lines:
+        sec_match = sec_pattern.match(line)
+        if sec_match:
+            flush_para()
+            current_section = sec_match.group(1).strip()
             continue
 
-        if current_clause_id:
-            if line.strip() == "---" or line.startswith("#"):
-                finalize_chunk()
-            else:
-                current_text_lines.append(line)
+        para_match = para_pattern.match(line.strip())
+        if para_match:
+            flush_para()
+            current_para_id = para_match.group(1)
+            current_para_lines = [line.strip()]
+        else:
+            if current_para_id:
+                current_para_lines.append(line)
 
-    finalize_chunk()
+    flush_para()
     return chunks
 
 
 def load_and_parse_all_corpus(corpus_dir: str = "corpus") -> List[Dict[str, Any]]:
-    """
-    Loads all corpus files (base manual + amendments) and parses them into structured chunks
-    tagged with their respective effective dates.
-    """
+    """Loads and chunks all policy documents in the corpus directory."""
     all_chunks = []
     
-    base_manual_path = os.path.join(corpus_dir, "policy-manual.md")
-    if os.path.exists(base_manual_path):
-        base_text = load_policy_manual(base_manual_path)
-        base_chunks = parse_chunks(base_text, default_effective_date="2025-12-31")
-        all_chunks.extend(base_chunks)
-
+    manual_path = os.path.join(corpus_dir, "policy-manual.md")
+    if os.path.exists(manual_path):
+        all_chunks.extend(parse_policy_manual_chunks(load_policy_manual(manual_path)))
+        
     amendment_path = os.path.join(corpus_dir, "Amendment No. 2026-01.md")
     if os.path.exists(amendment_path):
-        amendment_text = load_policy_manual(amendment_path)
-        amendment_chunks = parse_chunks(amendment_text, default_effective_date="2026-03-01")
-        all_chunks.extend(amendment_chunks)
+        all_chunks.extend(parse_amendment_chunks(load_policy_manual(amendment_path)))
 
     return all_chunks
-
-
-if __name__ == "__main__":
-    chunks = load_and_parse_all_corpus()
-    print(f"Total Corpus Chunks Extracted: {len(chunks)}")
-    print(f"Base Manual Chunks (2025-12-31): {len([c for c in chunks if c['effective_date'] == '2025-12-31'])}")
-    print(f"Amendment 2026-01 Chunks (2026-03-01): {len([c for c in chunks if c['effective_date'] == '2026-03-01'])}")

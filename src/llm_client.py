@@ -2,170 +2,237 @@ import os
 import json
 import urllib.request
 import urllib.error
-from typing import Dict, Any, List, Optional
+from typing import Optional, Dict, Any, List
+
+
+def load_dotenv():
+    """Lightweight pure-python .env loader."""
+    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip().strip("'\"")
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+        except Exception:
+            pass
+
+
+# Auto-load .env on import
+load_dotenv()
 
 
 class LLMClient:
     """
-    Wrapper for LLM calls (Gemini API or local LLM synthesizer) to perform
-    substantive verification, contradiction detection, and date-aware grounded answer generation.
+    Pluggable LLM Client supporting multiple providers:
+    - Groq (llama-3.3-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768)
+    - Google Gemini (gemini-2.0-flash, gemini-1.5-pro, gemini-1.5-flash)
+    - OpenAI (gpt-4o, gpt-4o-mini, etc.)
+    - Anthropic (claude-3-5-sonnet, claude-3-haiku, etc.)
+    - Ollama / Local HTTP endpoints
+    - Local Deterministic Fallback Engine (no API key required)
     """
 
-    def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-1.5-flash"):
-        self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        self.model_name = model_name
+    def __init__(
+        self,
+        provider: str = "groq",
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        api_base: Optional[str] = None
+    ):
+        self.provider = provider.lower().strip()
+        self.model = model
+        self.api_key = api_key
+        self.api_base = api_base
+        self._init_defaults()
 
-    def call_gemini(self, prompt: str, system_instruction: str = "", force_llm_synth: bool = False, claim_date: Optional[str] = None) -> Optional[str]:
-        """
-        Executes a Gemini REST API call if a valid API key is present.
-        If force_llm_synth is True or call fails/unconfigured, returns natural-language synthesis.
-        """
-        if self.api_key and self.api_key.startswith("AIzaSy"):
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={self.api_key}"
-            headers = {"Content-Type": "application/json"}
-            
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}]
-            }
-            if system_instruction:
-                payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
-
-            try:
-                req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        if parts:
-                            return parts[0].get("text", "")
-            except Exception:
-                pass
-
-        if force_llm_synth or self.api_key:
-            return self._synthesize_llm_response(prompt, claim_date=claim_date)
-
-        return None
-
-    def _synthesize_llm_response(self, prompt: str, claim_date: Optional[str] = None) -> str:
-        """
-        Synthesizes a fluent, date-aware grounded response from prompt context.
-        If claim_date is None, starts with a natural language direct answer first,
-        followed by detailed policy breakdowns for both pre- and post-1 March 2026 dates.
-        """
-        prompt_lower = prompt.lower()
-
-        # If claim_date is UNSPECIFIED (None), start with natural language conclusion FIRST!
-        if claim_date is None:
-            if "day 15" in prompt_lower or "report" in prompt_lower or "overpayment" in prompt_lower or "violation" in prompt_lower:
-                return (
-                    "Whether reporting on day 15 is a violation and results in an overpayment depends on the date of the change:\n"
-                    "• For changes **before 1 March 2026**, reporting on day 15 is a violation of the 10-day deadline, but no overpayment is established due to the 30-day protection window [§4.3.2 / §9.1.4].\n"
-                    "• For changes **on or after 1 March 2026**, reporting on day 15 is BOTH a reporting violation AND subject to an overpayment because Amendment No. 2026-01 aligns both limits to 14 calendar days [Amendment No. 2026-01 §2].\n\n"
-                    "---------------------------------------------------------------------------\n"
-                    "DETAILED POLICY PROVISIONS FOR BOTH DATES:\n\n"
-                    "• **Option A: Change occurred BEFORE 1 March 2026**\n"
-                    "  - **Part 1 (Violation):** Yes. Under §4.3.2, recipients must report changes within **10 calendar days**. Reporting on day 15 is a violation [§4.3.2].\n"
-                    "  - **Part 2 (Overpayment):** No. Under §9.1.4, because the report was made within **30 calendar days** (day 15), no overpayment is established prior to the Department acting on the report [§9.1.4].\n\n"
-                    "• **Option B: Change occurred ON OR AFTER 1 March 2026 (Amendment No. 2026-01)**\n"
-                    "  - **Part 1 (Violation):** Yes. Under §4.3.2 as amended by Amendment No. 2026-01 §2.1, recipients must report changes within **14 calendar days**. Reporting on day 15 exceeds the 14-day limit [§4.3.2 as amended].\n"
-                    "  - **Part 2 (Overpayment):** Yes. Under §9.1.4 as amended by Amendment No. 2026-01 §2.2, overpayment protection applies only if reported within **14 calendar days**. Because day 15 exceeds 14 days, overpayment protection does NOT apply [Amendment No. 2026-01 §2.2].\n\n"
-                    "-> Note: Please specify the date of the change or claim to apply the exact single-date determination."
-                )
-            elif "disregard" in prompt_lower or "earning" in prompt_lower or "6.4.1" in prompt:
-                return (
-                    "The applicable monthly earnings disregard depends on the date of determination:\n"
-                    "• For claims/determinations **before 1 March 2026**, the disregard is **$120 per month** [§6.4.1(a)].\n"
-                    "• For claims/determinations **on or after 1 March 2026**, the disregard is **$175 per month** under Amendment No. 2026-01 §1.1.\n\n"
-                    "---------------------------------------------------------------------------\n"
-                    "DETAILED POLICY PROVISIONS FOR BOTH DATES:\n\n"
-                    "• **Option A: Before 1 March 2026:** $120 per month disregard [§6.4.1(a)].\n"
-                    "• **Option B: On or after 1 March 2026:** $175 per month disregard [§6.4.1(a) as amended by Amendment No. 2026-01 §1.1].\n\n"
-                    "-> Note: Please specify the claim date to apply the correct disregard."
-                )
-            elif "single" in prompt_lower or "threshold" in prompt_lower or "6.6.1" in prompt:
-                return (
-                    "The monthly income threshold for a single adult (household size 1) depends on the claim date:\n"
-                    "• For claims **before 1 March 2026**, the threshold is **$1,180 per month** [§6.6.1].\n"
-                    "• For claims **on or after 1 March 2026**, the threshold is **$1,225 per month** under Amendment No. 2026-01 §3.1.\n\n"
-                    "---------------------------------------------------------------------------\n"
-                    "DETAILED POLICY PROVISIONS FOR BOTH DATES:\n\n"
-                    "• **Option A: Before 1 March 2026:** $1,180 per month [§6.6.1].\n"
-                    "• **Option B: On or after 1 March 2026:** $1,225 per month [§6.6.1 as amended by Amendment No. 2026-01 §3.1].\n\n"
-                    "-> Note: Please specify the claim date."
-                )
-            elif "sanction" in prompt_lower or "10.5.2" in prompt:
-                return (
-                    "The maximum sanction reduction rate depends on the claim date:\n"
-                    "• For claims **before 1 March 2026**, the maximum sanction reduction is **20 per cent** [§10.5.2].\n"
-                    "• For claims **on or after 1 March 2026**, the maximum sanction reduction is **15 per cent** [§10.5.2 as amended by Amendment No. 2026-01 §4.1].\n\n"
-                    "---------------------------------------------------------------------------\n"
-                    "DETAILED POLICY PROVISIONS FOR BOTH DATES:\n\n"
-                    "• **Option A: Before 1 March 2026:** 20 per cent reduction [§10.5.2].\n"
-                    "• **Option B: On or after 1 March 2026:** 15 per cent reduction [§10.5.2 as amended by Amendment No. 2026-01 §4.1]. Also, no sanction is imposed if the unreported change would have increased the award [Amendment No. 2026-01 §4.2 / §10.5.3A].\n\n"
-                    "-> Note: Please specify the claim date."
-                )
-
-        # When claim_date IS specified
-        is_post_amendment = (claim_date and claim_date >= "2026-03-01")
-
-        if "day 15" in prompt_lower or "report" in prompt_lower or "overpayment" in prompt_lower or "violation" in prompt_lower:
-            if is_post_amendment:
-                return (
-                    f"Yes, reporting a change on day 15 for a claim dated {claim_date} is a violation AND subject to an overpayment.\n\n"
-                    "• **Part 1 (Violation):** Under §4.3.2 as amended by Amendment No. 2026-01 §2.1, recipients must report changes within **14 calendar days**. Reporting on day 15 exceeds the 14-day limit [§4.3.2 as amended].\n"
-                    "• **Part 2 (Overpayment):** Under §9.1.4 as amended by Amendment No. 2026-01 §2.2, overpayment protection applies only if reported within **14 calendar days**. Because day 15 exceeds 14 days, overpayment protection does NOT apply [Amendment No. 2026-01 §2.2]."
-                )
+    def _init_defaults(self):
+        # Set default model names per provider
+        if not self.model:
+            if self.provider in ("groq",):
+                self.model = "llama-3.3-70b-versatile"
+            elif self.provider in ("gemini", "google"):
+                self.model = "gemini-2.0-flash"
+            elif self.provider in ("openai", "chatgpt"):
+                self.model = "gpt-4o-mini"
+            elif self.provider in ("anthropic", "claude"):
+                self.model = "claude-3-5-sonnet-20241022"
+            elif self.provider in ("ollama", "local"):
+                self.model = "llama3.2"
             else:
-                return (
-                    f"For a claim dated {claim_date}, reporting on day 15 is a violation, but no retroactive overpayment will be established.\n\n"
-                    "• **Part 1 (Violation):** Under §4.3.2, recipients must report changes within **10 calendar days**. Reporting on day 15 exceeds the 10-day limit [§4.3.2].\n"
-                    "• **Part 2 (Overpayment):** Under §9.1.4, because the change was reported within **30 calendar days** (on day 15), no overpayment is established for the period prior to the Department acting on the report [§9.1.4]."
-                )
+                self.model = "deterministic"
 
-        if "disregard" in prompt_lower or "earning" in prompt_lower or "6.4.1" in prompt:
-            if is_post_amendment:
-                return (
-                    f"For determinations made on or after 1 March 2026 (Claim Date: {claim_date}), "
-                    "the Department disregards the first **$175 per month** of household earnings from employment "
-                    "[§6.4.1(a) as amended by Amendment No. 2026-01 §1.1]."
-                )
+        # Check environment variables if API key is not passed directly
+        if not self.api_key:
+            if self.provider in ("groq",):
+                self.api_key = os.getenv("GROQ_API_KEY")
+            elif self.provider in ("gemini", "google"):
+                self.api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+            elif self.provider in ("openai", "chatgpt"):
+                self.api_key = os.getenv("OPENAI_API_KEY")
+            elif self.provider in ("anthropic", "claude"):
+                self.api_key = os.getenv("ANTHROPIC_API_KEY")
+
+    def set_api_key(self, api_key: str):
+        """Update API key at runtime."""
+        self.api_key = api_key
+
+    def set_model(self, provider: str, model: Optional[str] = None, api_key: Optional[str] = None):
+        """Switch model and provider at runtime."""
+        self.provider = provider.lower().strip()
+        self.model = model
+        if api_key:
+            self.api_key = api_key
+        self._init_defaults()
+
+    def generate_answer(self, prompt: str, system_instruction: str = "") -> str:
+        """
+        Sends generation request to the configured LLM provider.
+        Falls back gracefully if API key is not configured.
+        """
+        # If no key provided for hosted APIs, use built-in deterministic grounding
+        if self.provider in ("groq", "gemini", "google", "openai", "chatgpt", "anthropic", "claude") and not self.api_key:
+            return self._fallback_grounded_answer(prompt)
+
+        try:
+            if self.provider in ("groq",):
+                return self._call_groq(prompt, system_instruction)
+            elif self.provider in ("gemini", "google"):
+                return self._call_gemini(prompt, system_instruction)
+            elif self.provider in ("openai", "chatgpt"):
+                return self._call_openai(prompt, system_instruction)
+            elif self.provider in ("anthropic", "claude"):
+                return self._call_anthropic(prompt, system_instruction)
+            elif self.provider in ("ollama", "local"):
+                return self._call_ollama(prompt, system_instruction)
             else:
-                return (
-                    f"For claims prior to 1 March 2026 (Claim Date: {claim_date}), "
-                    "the Department disregards the first **$120 per month** of household earnings from employment [§6.4.1(a)]."
-                )
+                return self._fallback_grounded_answer(prompt)
+        except Exception as e:
+            # If live API call fails (network or quota), gracefully return grounded fallback
+            return self._fallback_grounded_answer(prompt, error_msg=str(e))
 
-        if "single" in prompt_lower or "threshold" in prompt_lower or "6.6.1" in prompt:
-            if is_post_amendment:
-                return (
-                    f"For determinations on or after 1 March 2026 (Claim Date: {claim_date}), "
-                    "the monthly income threshold for a single adult (household size 1) is **$1,225** [§6.6.1 as amended by Amendment No. 2026-01 §3.1]."
-                )
-            else:
-                return (
-                    f"For claims prior to 1 March 2026 (Claim Date: {claim_date}), "
-                    "the monthly income threshold for a single adult (household size 1) is **$1,180** [§6.6.1]."
-                )
+    def _call_groq(self, prompt: str, system_instruction: str) -> str:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        payload = {
+            "model": self.model or "llama-3.3-70b-versatile",
+            "messages": [
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.1
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data["choices"][0]["message"]["content"].strip()
 
-        if "sanction" in prompt_lower or "10.5.2" in prompt:
-            if is_post_amendment:
-                return (
-                    f"For determinations on or after 1 March 2026 (Claim Date: {claim_date}), "
-                    "the maximum rate of sanction reduction is **15 per cent** [§10.5.2 as amended by Amendment No. 2026-01 §4.1]. "
-                    "Furthermore, a sanction must not be imposed if the failure to report would have increased the award [Amendment No. 2026-01 §4.2 / §10.5.3A]."
-                )
-            else:
-                return (
-                    f"For claims prior to 1 March 2026 (Claim Date: {claim_date}), "
-                    "the maximum rate of sanction reduction is **20 per cent** [§10.5.2]."
-                )
+    def _call_gemini(self, prompt: str, system_instruction: str) -> str:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
+        payload = {
+            "contents": [{"parts": [{"text": f"{system_instruction}\n\n{prompt}"}]}],
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024}
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-        if "resource limit" in prompt_lower or "2.4.1" in prompt:
-            return (
-                "Under the Household Support Program, the total countable resource limit for an eligible household "
-                "is **$4,000** [§2.4.1]. Any resources held jointly with non-household members are counted in proportion "
-                "to the recipient's beneficial interest [§2.4.3]."
-            )
+    def _call_openai(self, prompt: str, system_instruction: str) -> str:
+        url = "https://api.openai.com/v1/chat/completions"
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.1
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data["choices"][0]["message"]["content"].strip()
 
-        return f"Synthesized grounded answer for claim date {claim_date or 'UNSPECIFIED'} carrying strict clause citations."
+    def _call_anthropic(self, prompt: str, system_instruction: str) -> str:
+        url = "https://api.anthropic.com/v1/messages"
+        payload = {
+            "model": self.model,
+            "max_tokens": 1024,
+            "system": system_instruction,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data["content"][0]["text"].strip()
+
+    def _call_ollama(self, prompt: str, system_instruction: str) -> str:
+        base = self.api_base or "http://localhost:11434"
+        url = f"{base}/api/generate"
+        payload = {
+            "model": self.model,
+            "prompt": f"{system_instruction}\n\n{prompt}",
+            "stream": False
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data["response"].strip()
+
+    def _fallback_grounded_answer(self, prompt: str, error_msg: Optional[str] = None) -> str:
+        """
+        Deterministic Grounded Synthesis:
+        Used when no API key is provided or when running in offline mode.
+        """
+        lines = prompt.strip().split("\n")
+        context_blocks = []
+        for line in lines:
+            if line.startswith("• §") or line.startswith("• Amendment"):
+                context_blocks.append(line)
+
+        if context_blocks:
+            top_rule = context_blocks[0]
+            answer = f"According to the applicable policy provisions:\n\n{top_rule}"
+        else:
+            answer = "Based on the retrieved policy clauses, the rules are grounded in the cited sections below."
+
+        return answer

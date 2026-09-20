@@ -5,11 +5,11 @@ from src.retriever import extract_claim_date
 
 class ClauseVerifier:
     """
-    Stage 2 Verification & Refusal Engine:
-    Inspects candidate clauses retrieved in Stage 1 and applies date-aware policies for:
-    1. Substantive relevance & out-of-scope detection
-    2. Policy contradiction detection (handled per claim_date & Amendment 2026-01)
-    3. Dangling cross-reference detection (e.g. §7.1.3 referencing non-existent student rules in §5.4)
+    Stage 2 Verification & Policy Refusal Engine:
+    Validates candidate clauses from Stage 1 and applies policy rules for:
+    1. Substantive relevance & out-of-scope domain detection
+    2. Date-aware policy contradiction detection (§4.3.2 10 days vs §9.1.4 30 days)
+    3. Dangling cross-reference detection (§7.1.3 -> §5.4)
     4. Ambiguity / missing fact detection
     """
 
@@ -46,7 +46,7 @@ class ClauseVerifier:
                     "status": "ambiguous",
                     "claim_date": target_date,
                     "supporting_chunks": [],
-                    "routing": "Refer to Senior Policy Supervisor under §12.0.1 for application intake assessment."
+                    "routing": "Refer to Senior Policy Supervisor for departmental review under Part 11 / application intake assessment."
                 }
 
         # 1. Check Out-of-Scope Domain Keywords using word boundaries
@@ -56,50 +56,52 @@ class ClauseVerifier:
                     "status": "out_of_scope",
                     "claim_date": target_date,
                     "supporting_chunks": [],
-                    "routing": "Consult a Senior Policy Supervisor under §12.0.1 or contact the State Department of Human Services."
+                    "routing": "Consult a Senior Policy Supervisor for departmental review under Part 11 or contact the State Department of Human Services."
                 }
 
-        # 2. Detect Dangling References (§7.1.3 referencing §5.4)
-        if "student" in query_lower:
-            dangling_clause = next((c for c in candidates if c["clause_id"] == "7.1.3"), {"clause_id": "7.1.3", "text": "Full-time student rules", "score": 0.0})
-            return {
-                "status": "dangling_reference",
-                "claim_date": target_date,
-                "supporting_chunks": [dangling_clause],
-                "routing": "Per §12.0.1, refer the student eligibility determination to a Senior Policy Supervisor."
-            }
+        # 2. Check for Dangling Cross-References (e.g., §7.1.3 referencing §5.4 for students)
+        if any(c.get("clause_id") == "7.1.3" for c in candidates):
+            if any(term in query_lower for term in ["student", "5.4", "higher education"]):
+                return {
+                    "status": "dangling_reference",
+                    "claim_date": target_date,
+                    "supporting_chunks": [c for c in candidates if c.get("clause_id") == "7.1.3"],
+                    "routing": "Escalate to District Policy Lead under Part 11 to resolve ungrounded / missing cross-reference in §7.1.3 -> §5.4."
+                }
 
-        # 3. Check Candidate Retrieval Threshold (0.20 score threshold)
-        if not candidates or candidates[0]["score"] < 0.20:
-            return {
-                "status": "out_of_scope",
-                "claim_date": target_date,
-                "supporting_chunks": [],
-                "routing": "Consult a Senior Policy Supervisor under §12.0.1 or contact the State Department of Human Services."
-            }
+        # 3. Check for Policy Contradictions: Reporting Timeline conflict (§4.3.2 vs §9.1.4)
+        cids = [c.get("clause_id") for c in candidates]
+        has_432 = any("4.3.2" in cid for cid in cids)
+        has_914 = any("9.1.4" in cid for cid in cids)
+        is_reporting_query = any(k in query_lower for k in [
+            "report", "change", "timeline", "deadline", "10 days", "30 days", "14 days", "circumstance", "conflict", "contradiction"
+        ])
 
-        # 4. Detect Contradiction for Pre-March 2026 Reporting Queries
-        if not target_date or target_date < "2026-03-01":
-            if ("contradiction" in query_lower or ("10 days" in query_lower and "30 days" in query_lower)) or ("report" in query_lower and "change" in query_lower and "day" in query_lower and "february" in query_lower):
-                conflicting = [c for c in candidates if c["clause_id"] in ("4.3.2", "9.1.4")]
+        if (has_432 and has_914) or (is_reporting_query and (has_432 or has_914 or "contradiction" in query_lower)):
+            # If claim date is on or after 1 March 2026, Amendment No. 2026-01 §2 has resolved the conflict to 14 days
+            if target_date is not None and target_date >= "2026-03-01":
+                return {
+                    "status": "supported",
+                    "claim_date": target_date,
+                    "supporting_chunks": candidates,
+                    "routing": "Determined in accordance with Amendment No. 2026-01 §2 (14-day rule)."
+                }
+            else:
+                # Pre-amendment (or unspecified date): conflict exists
+                conflicting = [c for c in candidates if c.get("clause_id") in ("4.3.2", "9.1.4")]
                 if not conflicting:
-                    conflicting = [
-                        {"clause_id": "4.3.2", "text": "Mandates 10 calendar days reporting deadline", "score": 0.5},
-                        {"clause_id": "9.1.4", "text": "Refers to 30 calendar days for overpayment protection", "score": 0.5}
-                    ]
+                    conflicting = candidates[:2]
                 return {
                     "status": "contradiction",
                     "claim_date": target_date,
                     "conflicting_chunks": conflicting,
-                    "routing": "Per §12.0.1, caseworkers must not make unilateral determinations when manual provisions conflict. Escalate to a Senior Policy Supervisor for a written ruling."
+                    "routing": "Refer to Senior Policy Supervisor for departmental review under Part 11 (Appeals & Escalations)."
                 }
 
-        # 5. Clean Grounded Candidates
-        top_candidates = [c for c in candidates if c["score"] >= 0.20][:3]
-        
+        # 4. Standard Supported Case
         return {
             "status": "supported",
             "claim_date": target_date,
-            "supporting_chunks": top_candidates,
-            "routing": ""
+            "supporting_chunks": candidates,
+            "routing": "Standard determination under Calder County Policy Manual."
         }

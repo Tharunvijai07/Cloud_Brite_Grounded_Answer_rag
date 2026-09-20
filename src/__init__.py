@@ -1,3 +1,3 @@
 """
-Source package for Grounded Answer RAG System.
+Calder County Policy Grounded Answer RAG System.
 """
