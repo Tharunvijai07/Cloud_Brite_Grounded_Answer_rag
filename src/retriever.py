@@ -68,23 +68,35 @@ def tokenize(text: str) -> List[str]:
 
 
 class BM25Index:
-    """Pure Python in-memory BM25 implementation for zero-dependency keyword search."""
+    """
+    Pure-Python in-memory BM25 implementation for zero-dependency keyword search.
+
+    Improvement (2.2): term-frequency maps are pre-computed once at index time
+    as Counter objects, so `get_scores()` is O(|query_tokens| × N) instead of
+    re-scanning each document list for every query term.
+    """
+
     def __init__(self, corpus: List[List[str]], k1: float = 1.5, b: float = 0.75):
         self.k1 = k1
         self.b = b
         self.corpus = corpus
         self.doc_len = [len(doc) for doc in corpus]
         self.avgdl = sum(self.doc_len) / len(corpus) if corpus else 1.0
+        self.N = len(corpus)
+
+        # Pre-compute per-document term frequency maps (2.2)
+        self.tf: List[Counter] = [Counter(doc) for doc in corpus]
+
         self.doc_freqs: Dict[str, int] = {}
         self.idf: Dict[str, float] = {}
-        self.N = len(corpus)
         self._build_index()
 
     def _build_index(self):
-        for doc in self.corpus:
-            unique_terms = set(doc)
-            for term in unique_terms:
+        # Count how many documents contain each term
+        for tf_map in self.tf:
+            for term in tf_map:
                 self.doc_freqs[term] = self.doc_freqs.get(term, 0) + 1
+        # Compute IDF scores
         for term, freq in self.doc_freqs.items():
             self.idf[term] = math.log(1 + (self.N - freq + 0.5) / (freq + 0.5))
 
@@ -94,11 +106,14 @@ class BM25Index:
             if q not in self.idf:
                 continue
             idf = self.idf[q]
-            for idx, doc in enumerate(self.corpus):
-                term_count = doc.count(q)
+            for idx in range(self.N):
+                # O(1) lookup via pre-computed Counter (2.2)
+                term_count = self.tf[idx].get(q, 0)
                 if term_count > 0:
                     num = term_count * (self.k1 + 1)
-                    denom = term_count + self.k1 * (1 - self.b + self.b * (self.doc_len[idx] / self.avgdl))
+                    denom = term_count + self.k1 * (
+                        1 - self.b + self.b * (self.doc_len[idx] / self.avgdl)
+                    )
                     scores[idx] += idf * (num / denom)
         return scores
 
@@ -106,15 +121,23 @@ class BM25Index:
 class ClauseRetriever:
     """
     Hybrid Retriever (In-Memory NumPy Store):
-    - Dense vector embeddings via BAAI/bge-small-en-v1.5 (with local TF-IDF vectorizer fallback)
+    - Dense vector embeddings via BAAI/bge-small-en-v1.5 (with local TF-IDF fallback)
     - Lexical search via BM25
-    - Hybrid scoring with Reciprocal Rank Fusion & score normalization
+    - Hybrid scoring: combined = alpha × cosine + (1-alpha) × bm25_norm
     - Temporal date-aware clause filtering
+
+    Improvement (2.1): `alpha` is now a tunable constructor parameter (default 0.7).
     """
 
-    def __init__(self, chunks: List[Dict[str, Any]], embedding_model_name: str = "BAAI/bge-small-en-v1.5"):
+    def __init__(
+        self,
+        chunks: List[Dict[str, Any]],
+        embedding_model_name: str = "BAAI/bge-small-en-v1.5",
+        alpha: float = 0.7,          # 2.1 — tunable hybrid weight
+    ):
         self.chunks = chunks
         self.embedding_model_name = embedding_model_name
+        self.alpha = alpha            # 2.1
         self.dense_model = None
         self.use_dense_model = False
 
@@ -129,7 +152,7 @@ class ClauseRetriever:
         self._build_indexes()
 
     def _build_indexes(self):
-        # 1. Build BM25 Index
+        # 1. Build BM25 Index (uses pre-computed Counters internally)
         corpus_tokenized = [
             tokenize(f"{c.get('display_id', '')} {c.get('heading', '')} {c.get('text', '')}")
             for c in self.chunks
@@ -145,13 +168,14 @@ class ClauseRetriever:
             embeddings = self.dense_model.encode(texts, normalize_embeddings=True)
             self.dense_embeddings = np.array(embeddings, dtype=np.float32)
         else:
-            # Fallback: In-memory TF-IDF Vectorizer
             self._build_tfidf_fallback()
 
     def _build_tfidf_fallback(self):
-        self.vocab = {}
+        self.vocab: Dict[str, int] = {}
         for c in self.chunks:
-            tokens = set(tokenize(f"{c.get('display_id', '')} {c.get('heading', '')} {c.get('text', '')}"))
+            tokens = set(
+                tokenize(f"{c.get('display_id', '')} {c.get('heading', '')} {c.get('text', '')}")
+            )
             for t in tokens:
                 self.vocab[t] = self.vocab.get(t, 0) + 1
 
@@ -161,7 +185,9 @@ class ClauseRetriever:
 
         matrix = np.zeros((self.num_docs, len(self.term_list)), dtype=np.float32)
         for idx, c in enumerate(self.chunks):
-            tokens = tokenize(f"{c.get('display_id', '')} {c.get('heading', '')} {c.get('text', '')}")
+            tokens = tokenize(
+                f"{c.get('display_id', '')} {c.get('heading', '')} {c.get('text', '')}"
+            )
             counts = Counter(tokens)
             for t, count in counts.items():
                 if t in self.term_to_id:
@@ -169,7 +195,7 @@ class ClauseRetriever:
                     idf = math.log((self.num_docs + 1) / (self.vocab[t] + 1)) + 1.0
                     matrix[idx, tid] = (1 + math.log(count)) * idf
 
-        # Normalize rows to unit length for fast dot product
+        # Normalise rows to unit length for fast dot product
         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         self.dense_embeddings = matrix / norms
@@ -192,26 +218,34 @@ class ClauseRetriever:
                 vec = vec / norm
             return vec
 
-    def retrieve(self, query: str, top_k: int = 5, claim_date: Optional[str] = None, use_hybrid: bool = True) -> List[Dict[str, Any]]:
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 5,
+        claim_date: Optional[str] = None,
+        use_hybrid: bool = True,
+    ) -> List[Dict[str, Any]]:
         """
-        Retrieves top-k relevant clauses using Cosine Similarity over in-memory NumPy vectors,
-        with optional BM25 keyword boosting for exact statutory terms.
+        Retrieves top-k relevant clauses using Cosine Similarity over in-memory
+        NumPy vectors, with optional BM25 keyword boosting for exact statutory terms.
+
+        Hybrid weight: combined = alpha × cosine + (1-alpha) × bm25_norm  (2.1)
         """
         target_date = claim_date if claim_date is not None else extract_claim_date(query)
 
-        # 1. Compute exact Cosine Similarity via in-memory NumPy dot product on normalized vectors
+        # 1. Cosine Similarity via dot product on normalised vectors
         q_dense = self._get_query_dense_embedding(query)
         cosine_similarities = np.dot(self.dense_embeddings, q_dense)
 
-        # 2. Compute BM25 Lexical Scores for exact term hits
+        # 2. BM25 Lexical Scores
         q_tokens = tokenize(query)
         bm25_scores = self.bm25.get_scores(q_tokens)
-        max_bm25 = np.max(bm25_scores) if np.max(bm25_scores) > 0 else 1.0
+        max_bm25 = float(np.max(bm25_scores)) if np.max(bm25_scores) > 0 else 1.0
         bm25_norm = bm25_scores / max_bm25
 
-        # 3. Final Ranking Score (Cosine Similarity weighted with exact keyword match)
+        # 3. Final Ranking Score (2.1 — uses self.alpha)
         if use_hybrid:
-            combined_scores = 0.7 * cosine_similarities + 0.3 * bm25_norm
+            combined_scores = self.alpha * cosine_similarities + (1.0 - self.alpha) * bm25_norm
         else:
             combined_scores = cosine_similarities
 
@@ -220,11 +254,14 @@ class ClauseRetriever:
         for idx, chunk in enumerate(self.chunks):
             effective_date = chunk.get("effective_date", "2025-12-31")
 
-            # Temporal filtering rule:
-            # - If target_date is given and < 2026-03-01: exclude 2026-03-01 amendment chunks
-            # - If target_date >= 2026-03-01: include both base and amendment chunks
-            # - If target_date is None: include both for dual-temporal branching
-            if target_date is not None and target_date < "2026-03-01" and effective_date >= "2026-03-01":
+            # Temporal filtering:
+            # - target_date < 2026-03-01: exclude post-amendment chunks
+            # - target_date >= 2026-03-01 or None: include all chunks
+            if (
+                target_date is not None
+                and target_date < "2026-03-01"
+                and effective_date >= "2026-03-01"
+            ):
                 continue
 
             c_copy = dict(chunk)
@@ -233,7 +270,5 @@ class ClauseRetriever:
             c_copy["bm25_score"] = float(bm25_scores[idx])
             scored_candidates.append(c_copy)
 
-        # Rank candidate clauses by score descending
         scored_candidates.sort(key=lambda x: x["score"], reverse=True)
         return scored_candidates[:top_k]
-

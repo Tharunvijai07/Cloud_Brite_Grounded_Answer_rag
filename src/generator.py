@@ -1,16 +1,28 @@
 from typing import Dict, Any, List, Optional
 from src.llm_client import LLMClient
+from src import messages
+
+
+# Maximum number of retrieved chunks forwarded to the LLM as context.
+# Increase for richer answers; decrease if you hit token limits.
+MAX_CONTEXT_CHUNKS: int = 3
 
 
 class GroundedAnswerGenerator:
     """
     Stage 3 Decision & Answer Generation Engine:
-    Synthesizes brief, clear answers grounded in retrieved policy clauses and Amendment No. 2026-01,
-    or surfaces structured refusals with routing.
+    Synthesises brief, clear answers grounded in retrieved policy clauses and
+    Amendment No. 2026-01, or surfaces structured refusals with routing.
+
+    Key improvements over v1:
+    - Sends the top MAX_CONTEXT_CHUNKS retrieved clauses (not just top-1) to the LLM,
+      producing richer, multi-clause grounded answers.
+    - All refusal/routing strings are imported from src.messages to avoid drift.
     """
 
     SYSTEM_INSTRUCTION = (
-        "You are an expert policy assistant answering questions about the Calder County Policy Manual using ONLY the retrieved clauses provided.\n"
+        "You are an expert policy assistant answering questions about the Calder County "
+        "Policy Manual using ONLY the retrieved clauses provided.\n"
         "1. Answer directly and concisely in the first sentence.\n"
         "2. Cite the exact clause (§x.y.z) for every policy statement.\n"
         "3. If a specific claim date is given, apply ONLY the rules in effect for that date.\n"
@@ -20,12 +32,17 @@ class GroundedAnswerGenerator:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.llm_client = llm_client or LLMClient()
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def generate(self, query: str, verification: Dict[str, Any]) -> Dict[str, Any]:
         """
         Generates the final system output response structure:
         {
             "query": str,
-            "decision": "ANSWER" | "REFUSE_CONTRADICTION" | "REFUSE_DANGLING" | "REFUSE_OUT_OF_SCOPE" | "REFUSE_AMBIGUOUS",
+            "decision": "ANSWER" | "REFUSE_CONTRADICTION" | "REFUSE_DANGLING"
+                        | "REFUSE_OUT_OF_SCOPE" | "REFUSE_AMBIGUOUS",
             "claim_date": str or None,
             "answer_text": str,
             "citations": List[str],
@@ -36,190 +53,158 @@ class GroundedAnswerGenerator:
         status = verification.get("status")
         claim_date = verification.get("claim_date")
 
-        # 0. Handle Ambiguity
         if status == "ambiguous":
-            return {
-                "query": query,
-                "decision": "REFUSE_AMBIGUOUS",
-                "claim_date": claim_date,
-                "answer_text": (
-                    "[REFUSAL: Ambiguous Query / Missing Fact Details]\n\n"
-                    "The query lacks sufficient details to make a policy determination. Required facts missing: household size, income, resources, and residency details."
-                ),
-                "citations": [],
-                "citation_scores": {},
-                "routing": verification.get("routing", "Refer to Senior Policy Supervisor for departmental review under Part 11 / application intake assessment.")
-            }
+            return self._refuse(
+                query, claim_date,
+                decision="REFUSE_AMBIGUOUS",
+                answer_text=messages.REFUSAL_AMBIGUOUS,
+                routing=verification.get("routing", messages.ROUTE_SENIOR_SUPERVISOR),
+            )
 
-        # 1. Handle Contradictions (Pre-March 2026 reporting conflict)
         if status == "contradiction":
             conflicts = verification.get("conflicting_chunks", [])
-            citations = [c.get("display_id", f"§{c.get('clause_id')}") for c in conflicts]
-            citation_scores = {c.get("display_id", f"§{c.get('clause_id')}"): round(c.get("score", 0.0), 4) for c in conflicts}
-
-            refusal_text = (
-                "[REFUSAL: Policy Contradiction Detected]\n\n"
-                "The policy manual contains an unresolved internal conflict regarding reporting timeframes for changes of circumstances:\n"
-                "• §4.3.2 specifies that changes must be reported within 10 calendar days.\n"
-                "• §9.1.4 specifies that changes must be reported within 30 calendar days.\n\n"
-                "Because these provisions conflict for pre-1 March 2026 determinations, this query cannot be answered deterministically without administrative direction."
+            return self._refuse(
+                query, claim_date,
+                decision="REFUSE_CONTRADICTION",
+                answer_text=messages.REFUSAL_CONTRADICTION,
+                routing=verification.get("routing", messages.ROUTE_APPEALS),
+                chunks=conflicts,
             )
 
-            return {
-                "query": query,
-                "decision": "REFUSE_CONTRADICTION",
-                "claim_date": claim_date,
-                "answer_text": refusal_text,
-                "citations": citations,
-                "citation_scores": citation_scores,
-                "routing": verification.get("routing", "Refer to Senior Policy Supervisor for departmental review under Part 11 (Appeals & Escalations).")
-            }
-
-        # 2. Handle Dangling Cross-References
         if status == "dangling_reference":
             supporting = verification.get("supporting_chunks", [])
-            citations = [c.get("display_id", f"§{c.get('clause_id')}") for c in supporting]
-            citation_scores = {c.get("display_id", f"§{c.get('clause_id')}"): round(c.get("score", 0.0), 4) for c in supporting}
-
-            refusal_text = (
-                "[REFUSAL: Incomplete / Dangling Policy Reference]\n\n"
-                "§7.1.3 cross-references §5.4 for eligibility rules governing full-time higher education students. "
-                "However, §5.4 in the manual contains no student eligibility criteria (addressing unrelated requirements). "
-                "The policy is incomplete regarding higher education student eligibility."
+            return self._refuse(
+                query, claim_date,
+                decision="REFUSE_DANGLING",
+                answer_text=messages.REFUSAL_DANGLING,
+                routing=verification.get("routing", messages.ROUTE_DANGLING),
+                chunks=supporting,
             )
 
-            return {
-                "query": query,
-                "decision": "REFUSE_DANGLING",
-                "claim_date": claim_date,
-                "answer_text": refusal_text,
-                "citations": citations,
-                "citation_scores": citation_scores,
-                "routing": verification.get("routing", "Escalate to District Policy Lead under Part 11 to resolve ungrounded / missing cross-reference in §7.1.3 -> §5.4.")
-            }
-
-        # 3. Handle Out of Scope
         if status == "out_of_scope":
-            return {
-                "query": query,
-                "decision": "REFUSE_OUT_OF_SCOPE",
-                "claim_date": claim_date,
-                "answer_text": (
-                    "[REFUSAL: Out of Scope]\n\n"
-                    "The subject matter of this question falls outside the scope of the Calder County Household Support Program Policy Manual."
-                ),
-                "citations": [],
-                "citation_scores": {},
-                "routing": verification.get("routing", "Consult a Senior Policy Supervisor for departmental review under Part 11 or contact the State Department of Human Services.")
-            }
+            return self._refuse(
+                query, claim_date,
+                decision="REFUSE_OUT_OF_SCOPE",
+                answer_text=messages.REFUSAL_OUT_OF_SCOPE,
+                routing=verification.get("routing", messages.ROUTE_OUT_OF_SCOPE),
+            )
 
-        # 4. Handle Grounded Answer Generation
+        # --- Grounded Answer Generation ---
         supporting_chunks = verification.get("supporting_chunks", [])
         if not supporting_chunks:
-            return {
-                "query": query,
-                "decision": "REFUSE_OUT_OF_SCOPE",
-                "claim_date": claim_date,
-                "answer_text": "[REFUSAL: No Relevant Policy Found]\n\nNo matching clauses found in the policy manual for this query.",
-                "citations": [],
-                "citation_scores": {},
-                "routing": "Refer to Senior Policy Supervisor for departmental review under Part 11."
-            }
+            return self._refuse(
+                query, claim_date,
+                decision="REFUSE_OUT_OF_SCOPE",
+                answer_text=messages.REFUSAL_NO_CLAUSES,
+                routing=messages.ROUTE_SENIOR_SUPERVISOR,
+            )
 
-        citations = [c.get("display_id", f"§{c.get('clause_id')}") for c in supporting_chunks]
+        citations = [
+            c.get("display_id", f"§{c.get('clause_id')}") for c in supporting_chunks
+        ]
         citation_scores = {
-            c.get("display_id", f"§{c.get('clause_id')}"): round(c.get("cosine_similarity", c.get("score", 0.0)), 4)
+            c.get("display_id", f"§{c.get('clause_id')}"): round(
+                c.get("cosine_similarity", c.get("score", 0.0)), 4
+            )
             for c in supporting_chunks
         }
 
-        # Check if Date is Unspecified -> Dual-Temporal Branching
-        if claim_date is None:
-            # Check if query touches an amended provision
-            has_amendment_overlap = any("amendment" in c.get("clause_id", "").lower() or c.get("clause_id") in ("6.4.1", "4.3.2", "9.1.4", "6.6.1", "10.5.2") for c in supporting_chunks)
+        # Build multi-chunk context (top MAX_CONTEXT_CHUNKS, not just top-1)
+        context_str = self._build_context(supporting_chunks, claim_date)
 
-            if has_amendment_overlap:
-                answer_text = self._build_dual_temporal_branch(query, supporting_chunks)
-                return {
-                    "query": query,
-                    "decision": "ANSWER",
-                    "claim_date": None,
-                    "answer_text": answer_text,
-                    "citations": citations,
-                    "citation_scores": citation_scores,
-                    "routing": "Review determination against date of claim/change."
-                }
-
-        # Build prompt for single claim date
-        context_items = []
-        for c in supporting_chunks[:4]:
-            cid = c.get('display_id') or f"§{c.get('clause_id', '')}"
-            heading = c.get('heading', '')
-            text = c.get('text', '')
-            context_items.append(f"• {cid} ({heading}):\n{text}")
-        context_str = "\n\n".join(context_items)
-
-        date_instruction = f"Applicable Claim Date: {claim_date}" if claim_date else "Applicable Claim Date: Unspecified"
+        date_instruction = (
+            f"Applicable Claim Date: {claim_date}"
+            if claim_date
+            else (
+                "Applicable Claim Date: Unspecified "
+                "(mention pre-1 March 2026 vs post-1 March 2026 rules if they differ)"
+            )
+        )
         prompt = (
             f"User Question: {query}\n"
             f"{date_instruction}\n\n"
-            f"Retrieved Policy Context:\n{context_str}\n\n"
-            f"Provide a clear grounded answer applying the retrieved clauses."
+            f"Retrieved Policy Context (in relevance order):\n{context_str}\n\n"
+            "Provide a clear, grounded answer to the question based on the policy clauses above."
         )
 
         llm_response = self.llm_client.generate_answer(prompt, self.SYSTEM_INSTRUCTION)
-
-        # Append citations and cosine similarity scores section
-        formatted_answer = (
-            f"{llm_response}\n\n"
-            f"---------------------------------------------------------------------------\n"
-            f"EXPLICIT CLAUSE CITATIONS & COSINE SIMILARITY SCORES:\n"
-        )
-        for cid, cos_score in list(citation_scores.items())[:4]:
-            formatted_answer += f"  • {cid:<20} | Cosine Similarity Score: {cos_score:.4f}\n"
 
         return {
             "query": query,
             "decision": "ANSWER",
             "claim_date": claim_date,
-            "answer_text": formatted_answer,
+            "answer_text": llm_response,
             "citations": citations,
             "citation_scores": citation_scores,
-            "routing": "Standard determination under Calder County Policy Manual."
+            "routing": messages.ROUTE_STANDARD,
         }
 
-    def _build_dual_temporal_branch(self, query: str, supporting_chunks: List[Dict[str, Any]]) -> str:
-        """Constructs side-by-side Dual-Temporal policy rules when claim date is unspecified."""
-        # Find base and amendment clauses
-        base_chunk = next((c for c in supporting_chunks if "amendment" not in c.get("clause_id", "").lower()), supporting_chunks[0])
-        amend_chunk = next((c for c in supporting_chunks if "amendment" in c.get("clause_id", "").lower()), None)
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
-        output = (
-            f"TEMPORAL POLICY DETERMINATION (Claim Date Not Specified):\n\n"
-            f"Because no claim date was provided, policy provisions before and after 1 March 2026 (effective date of Amendment No. 2026-01) are surfaced below:\n\n"
-            f"---------------------------------------------------------------------------\n"
-            f"• Option A: Claims before 1 March 2026:\n"
-            f"  Governed by base manual {base_chunk.get('display_id', '')}: {base_chunk.get('text', '')}\n\n"
-        )
+    def _build_context(
+        self, supporting_chunks: List[Dict[str, Any]], claim_date: Optional[str]
+    ) -> str:
+        """
+        Assembles the LLM context string from up to MAX_CONTEXT_CHUNKS retrieved
+        clauses.  If no claim date is supplied and an amendment chunk is available,
+        it is always included so the LLM can present dual-temporal rules.
+        """
+        # Start with top-N base chunks
+        selected: List[Dict[str, Any]] = list(supporting_chunks[:MAX_CONTEXT_CHUNKS])
 
-        if amend_chunk:
-            output += (
-                f"• Option B: Claims on or after 1 March 2026:\n"
-                f"  Governed by {amend_chunk.get('display_id', '')}: {amend_chunk.get('text', '')}\n\n"
+        # If date is unspecified, ensure at least one amendment chunk is included
+        if claim_date is None:
+            ids_selected = {c.get("clause_id") for c in selected}
+            amend_chunk = next(
+                (
+                    c for c in supporting_chunks
+                    if "amendment" in c.get("clause_id", "").lower()
+                    and c.get("clause_id") not in ids_selected
+                ),
+                None,
             )
-        else:
-            output += (
-                f"• Option B: Claims on or after 1 March 2026:\n"
-                f"  Standard provisions continue under {base_chunk.get('display_id', '')}.\n\n"
-            )
+            if amend_chunk:
+                selected.append(amend_chunk)
 
-        output += (
-            f"-> Note: Please specify the claim date to apply the correct policy rule.\n"
-            f"---------------------------------------------------------------------------\n"
-            f"EXPLICIT CLAUSE CITATIONS & COSINE SIMILARITY SCORES:\n"
+        parts: List[str] = []
+        for chunk in selected:
+            cid = chunk.get("display_id") or f"§{chunk.get('clause_id', '')}"
+            heading = chunk.get("heading", "")
+            text = chunk.get("text", "")
+            parts.append(f"• {cid} ({heading}):\n{text}")
+
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _build_citations(chunks: List[Dict[str, Any]]):
+        citations = [c.get("display_id", f"§{c.get('clause_id')}") for c in chunks]
+        scores = {
+            c.get("display_id", f"§{c.get('clause_id')}"): round(c.get("score", 0.0), 4)
+            for c in chunks
+        }
+        return citations, scores
+
+    @staticmethod
+    def _refuse(
+        query: str,
+        claim_date: Optional[str],
+        *,
+        decision: str,
+        answer_text: str,
+        routing: str,
+        chunks: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        citations, citation_scores = (
+            GroundedAnswerGenerator._build_citations(chunks) if chunks else ([], {})
         )
-        for c in supporting_chunks[:3]:
-            cid = c.get("display_id", f"§{c.get('clause_id')}")
-            cos_score = c.get("cosine_similarity", c.get("score", 0.0))
-            output += f"  • {cid:<20} | Cosine Similarity Score: {cos_score:.4f}\n"
-
-        return output
+        return {
+            "query": query,
+            "decision": decision,
+            "claim_date": claim_date,
+            "answer_text": answer_text,
+            "citations": citations,
+            "citation_scores": citation_scores,
+            "routing": routing,
+        }
