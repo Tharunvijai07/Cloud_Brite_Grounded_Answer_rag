@@ -59,13 +59,20 @@ class LLMClient:
         self.api_base = api_base
         self._init_defaults()
 
+    # Gemini model fallback chain — tried in order when a model returns 503/404
+    GEMINI_MODEL_FALLBACK: list = [
+        "gemini-3.6-flash",
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+    ]
+
     def _init_defaults(self):
         """Set default model names and read API keys from environment."""
         if not self.model:
             if self.provider in ("groq",):
                 self.model = "llama-3.3-70b-versatile"
             elif self.provider in ("gemini", "google"):
-                self.model = "gemini-3.6-flash"
+                self.model = self.GEMINI_MODEL_FALLBACK[0]  # gemini-3.6-flash
             elif self.provider in ("openai", "chatgpt"):
                 self.model = "gpt-4o-mini"
             elif self.provider in ("anthropic", "claude"):
@@ -197,12 +204,10 @@ class LLMClient:
 
     def _call_gemini(self, prompt: str, system_instruction: str) -> str:
         """
-        2.3 — Uses the dedicated systemInstruction field for better model adherence.
+        Calls Gemini with the dedicated systemInstruction field.
+        Automatically falls back through GEMINI_MODEL_FALLBACK on 503 (overloaded)
+        or 404 (model retired/unavailable).
         """
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.model}:generateContent?key={self.api_key}"
-        )
         payload: Dict[str, Any] = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024},
@@ -210,8 +215,37 @@ class LLMClient:
         if system_instruction:
             payload["system_instruction"] = {"parts": [{"text": system_instruction}]}
 
-        data = self._http_post_with_retry(url=url, payload=payload, headers={})
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        # Build the candidate model list: preferred model first, then fallbacks
+        candidates = [self.model] + [
+            m for m in self.GEMINI_MODEL_FALLBACK if m != self.model
+        ]
+
+        last_exc: Optional[Exception] = None
+        for model_name in candidates:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model_name}:generateContent?key={self.api_key}"
+            )
+            try:
+                data = self._http_post_with_retry(url=url, payload=payload, headers={})
+                # Success — update self.model so future calls use the working model
+                if model_name != self.model:
+                    import warnings
+                    warnings.warn(
+                        f"Gemini: switched from '{self.model}' to '{model_name}' "
+                        f"(primary model unavailable)."
+                    )
+                    self.model = model_name
+                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            except Exception as exc:
+                err_str = str(exc)
+                # Only fall through to next model on overload (503) or not-found (404)
+                if "503" in err_str or "404" in err_str:
+                    last_exc = exc
+                    continue
+                raise  # re-raise other errors (auth, quota, etc.) immediately
+
+        raise last_exc or RuntimeError("All Gemini model fallbacks exhausted.")
 
     def _call_openai(self, prompt: str, system_instruction: str) -> str:
         data = self._http_post_with_retry(
@@ -267,24 +301,43 @@ class LLMClient:
     def _fallback_grounded_answer(self, prompt: str, error_msg: Optional[str] = None) -> str:
         """
         Deterministic Grounded Synthesis:
-        Used when no API key is provided or when running in offline mode.
+        Used when no API key is provided, all LLM models are unavailable, or
+        running in fully offline mode.
+        Surfaces ALL retrieved policy context blocks (not just top-1) so the
+        answer remains as complete as possible without an LLM.
         """
         lines = prompt.strip().split("\n")
-        context_blocks = [
-            line for line in lines
-            if line.startswith("• §") or line.startswith("• Amendment")
-        ]
+
+        # Collect all retrieved clause bullet lines from the prompt
+        context_blocks: List[str] = []
+        capture = False
+        for line in lines:
+            if line.startswith("Retrieved Policy Context"):
+                capture = True
+                continue
+            if capture:
+                if line.startswith("Provide a clear") or line.startswith("User Question"):
+                    break
+                if line.strip():
+                    context_blocks.append(line)
+
+        # Fallback: pick bullet lines directly
+        if not context_blocks:
+            context_blocks = [
+                line for line in lines
+                if line.startswith("• §") or line.startswith("• Amendment")
+            ]
 
         if context_blocks:
-            top_rule = context_blocks[0]
-            answer = f"According to the applicable policy provisions:\n\n{top_rule}"
+            body = "\n".join(context_blocks)
+            answer = f"Based on the retrieved policy provisions:\n\n{body}"
         else:
             answer = (
                 "Based on the retrieved policy clauses, "
-                "the rules are grounded in the cited sections below."
+                "the applicable rules are grounded in the cited sections below."
             )
 
         if error_msg:
-            answer += f"\n\n[Note: Live API unavailable — {error_msg}]"
+            answer += f"\n\n[API unavailable — {error_msg}]"
 
         return answer

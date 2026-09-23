@@ -109,7 +109,7 @@ python src/main.py --provider gemini
 
 | Flag | Default | Description |
 |---|---|---|
-| `--provider` | `groq` | LLM provider: `gemini`, `groq`, `openai`, `anthropic`, `ollama`, `local` |
+| `--provider` | `gemini` | LLM provider: `gemini`, `groq`, `openai`, `anthropic`, `ollama`, `local` |
 | `--model` | *(provider default)* | Model name (e.g., `gemini-3.6-flash`, `gpt-4o-mini`) |
 | `--api-key` | *(from `.env`)* | API key (overrides `.env`) |
 | `--date` | *(auto-extracted)* | Claim date in `YYYY-MM-DD` or `Month YYYY` format |

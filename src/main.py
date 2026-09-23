@@ -20,7 +20,7 @@ def main():
     parser = argparse.ArgumentParser(description="Calder County Policy Grounded Answer RAG System")
     parser.add_argument("query", nargs="*", help="Plain language policy question")
     parser.add_argument("--date", type=str, default=None, help="Claim date (YYYY-MM-DD or Month YYYY e.g. 2026-02-01, 2026-04-01)")
-    parser.add_argument("--provider", type=str, default="groq", help="LLM Provider: groq, gemini, openai, anthropic, ollama, local")
+    parser.add_argument("--provider", type=str, default="gemini", help="LLM Provider: gemini, groq, openai, anthropic, ollama, local")
     parser.add_argument("--model", type=str, default=None, help="Model name (e.g. llama-3.3-70b-versatile, gemini-2.0-flash, gpt-4o-mini)")
     parser.add_argument("--api-key", type=str, default=None, help="API Key for the chosen provider (or set via environment variable)")
     parser.add_argument("--alpha", type=float, default=0.7, help="Hybrid retrieval weight: dense/(dense+bm25), range 0.0-1.0 (default 0.7)")
