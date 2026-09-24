@@ -23,8 +23,8 @@ class GroundedAnswerGenerator:
     SYSTEM_INSTRUCTION = (
         "You are an expert policy assistant answering questions about the Calder County "
         "Policy Manual using ONLY the retrieved clauses provided.\n"
-        "1. Answer directly and concisely in the first sentence.\n"
-        "2. Cite the exact clause (§x.y.z) for every policy statement.\n"
+        "1. Give a brief, plain-language answer in 1-3 sentences.\n"
+        "2. Do NOT include clause numbers (§x.y.z) in the answer — they are listed separately.\n"
         "3. If a specific claim date is given, apply ONLY the rules in effect for that date.\n"
         "4. Do not invent facts or extrapolate beyond the retrieved text."
     )

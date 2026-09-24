@@ -1,0 +1,8 @@
+{
+    // Tell VS Code's Python extension to inject variables from the .env file
+    // into every integrated terminal it opens for this workspace.
+    "python.terminal.useEnvFile": true,
+
+    // Point to the .env file at the workspace root (default, but explicit).
+    "python.envFile": "${workspaceFolder}/.env"
+}

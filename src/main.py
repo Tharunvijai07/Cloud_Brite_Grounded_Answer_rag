@@ -162,8 +162,33 @@ def process_query(
     # Stage 3: Generation
     result = generator.generate(query, verification)
 
-    # Display the LLM-generated response
+    # ── Output ──────────────────────────────────────────────────────────────
+    W = 75
+
+    # 1. Brief LLM-generated answer (no inline clause numbers)
+    print("\n" + "=" * W)
+    print("  ANSWER")
+    print("=" * W)
     print(f"\n{result['answer_text']}\n")
+
+    # 2. Compact sources line — clause IDs only
+    source_chunks = (
+        verification.get("supporting_chunks")
+        or verification.get("conflicting_chunks")
+        or []
+    )
+    if source_chunks:
+        ids = [
+            chunk.get("display_id") or f"§{chunk.get('clause_id', '?')}"
+            for chunk in source_chunks
+        ]
+        print("─" * W)
+        print("  SOURCES")
+        print("─" * W)
+        print(f"  {' | '.join(ids)}")
+        print("─" * W)
+
+
 
 
 if __name__ == "__main__":
